@@ -34,6 +34,7 @@ from bpy_extras.io_utils import ImportHelper  # type: ignore
 from mathutils import Vector  # type: ignore
 
 from .trimesh import TriMesh
+from .importer import NativeMeshData
 
 # LRU file cache with max entry limit
 MAX_FILE_CACHE = 10
@@ -193,23 +194,19 @@ def bpy_update_object_data(objdata, bm, vcol_name, colors, uvs, norms, mat_names
     #             removed.add(i)
 
     # Update mesh from Bmesh
-    # Apply also in edit mode, not just object mode
-    prev_mode = bpy.context.object.mode
-    bpy.ops.object.mode_set(mode="OBJECT")
+    # Only switch mode if not already in OBJECT mode (e.g. during rebuild)
+    active = bpy.context.object
+    prev_mode = active.mode if active else "OBJECT"
+    if prev_mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
 
     bm.to_mesh(objdata)
 
     if len(norms) > 0:
-        # Apply normals to mesh if they exist
-        # objdata.use_auto_smooth = True
-        # objdata.auto_smooth_angle = 3.14159
-
-        # Filter removed items from norms
-        # norms = [n for ni, n in enumerate(norms) if ni not in removed]
         objdata.normals_split_custom_set(np.array(norms))
 
-    # Return to previous object/edit mode
-    bpy.ops.object.mode_set(mode=prev_mode)
+    if prev_mode != "OBJECT":
+        bpy.ops.object.mode_set(mode=prev_mode)
 
 
 def calculate_detail_level(dlev):
@@ -322,35 +319,403 @@ def transform_to_up(up, chosen_objects, scale, to_cursor=True):
     #     obj.select_set(True)
 
 
+# Debug timing flag — set from addon settings at import start
+_debug_timing = False
+
+# Cumulative timing accumulators for profiling Phase 2
+_phase2_times = {
+    "build_trimesh": 0.0,
+    "fuse_verts": 0.0,
+    "filter_zero_area": 0.0,
+    "filter_same_face": 0.0,
+    "fill_empty_color": 0.0,
+    "get_all_loop_data": 0.0,
+    "add_to_bm": 0.0,
+    "bpy_update": 0.0,
+}
+
+
+def _reset_phase2_times():
+    for k in _phase2_times:
+        _phase2_times[k] = 0.0
+
+
+def _print_phase2_times():
+    print("\n--- Phase 2 timing breakdown ---")
+    total = sum(_phase2_times.values())
+    for k, v in sorted(_phase2_times.items(), key=lambda x: -x[1]):
+        pct = (v / total * 100) if total > 0 else 0
+        print(f"  {k:20s}: {v:7.2f}s  ({pct:4.1f}%)")
+    print(f"  {'TOTAL':20s}: {total:7.2f}s")
+
+
+def precompute_mesh_data(step_reader, shp, lind, angd, hacks):
+    """Compute mesh + loop data from OCC shape.
+
+    Returns (mesh, colors, mat_names, norms, uvs).
+    mesh is either TriMesh (Python fallback) or NativeMeshData (C++ path).
+    """
+    if _debug_timing:
+        t0 = time.time()
+
+    mesh = step_reader.build_trimesh(shp, lin_def=lind, ang_def=angd, hacks=hacks)
+
+    if _debug_timing:
+        t1 = time.time()
+
+    if isinstance(mesh, NativeMeshData):
+        # Native path: numpy vectorized operations
+        mesh.fuse_verts()
+        if _debug_timing: t2 = time.time()
+        mesh.filter_zero_area()
+        if _debug_timing: t3 = time.time()
+        mesh.filter_same_face()
+        if _debug_timing: t4 = time.time()
+        mesh.fill_empty_color()
+        if _debug_timing: t5 = time.time()
+        # Data stays in numpy arrays — no conversion needed
+        colors = mesh.get_loop_colors()
+        mat_names = mesh.get_loop_mat_names()
+        norms = mesh.get_loop_norms()
+        uvs = None  # not used currently
+        if _debug_timing: t6 = time.time()
+    else:
+        # Python fallback: TriMesh path
+        mesh.fuse_verts()
+        if _debug_timing: t2 = time.time()
+        mesh.filter_zero_area()
+        if _debug_timing: t3 = time.time()
+        mesh.filter_same_face()
+        if _debug_timing: t4 = time.time()
+        mesh.fill_empty_color()
+        if _debug_timing: t5 = time.time()
+        colors, mat_names, norms, uvs = mesh.get_all_loop_data()
+        if _debug_timing: t6 = time.time()
+
+    if _debug_timing:
+        _phase2_times["build_trimesh"] += t1 - t0
+        _phase2_times["fuse_verts"] += t2 - t1
+        _phase2_times["filter_zero_area"] += t3 - t2
+        _phase2_times["filter_same_face"] += t4 - t3
+        _phase2_times["fill_empty_color"] += t5 - t4
+        _phase2_times["get_all_loop_data"] += t6 - t5
+
+    return mesh, colors, mat_names, norms, uvs
+
+
+def apply_mesh_to_blender(obj, mesh, colors, mat_names, norms, uvs,
+                          vcol_name="Colors", build_materials=True):
+    """Main-thread only: push precomputed mesh data into a Blender object."""
+    if isinstance(mesh, NativeMeshData):
+        return _apply_native_mesh(obj, mesh, colors, mat_names, norms,
+                                  vcol_name, build_materials)
+    else:
+        return _apply_trimesh(obj, mesh, colors, mat_names, norms, uvs,
+                              vcol_name, build_materials)
+
+
+def _apply_native_mesh(obj, mesh, colors, mat_names, norms,
+                       vcol_name, build_materials):
+    """Fast path: from_pydata + foreach_set, no bmesh for geometry."""
+    n_verts = len(mesh.verts)
+    n_faces = len(mesh.faces)
+    if _debug_timing:
+        print(f"[bm] {n_verts}", end="")
+        t0 = time.time()
+
+    me = obj.data
+
+    # Ensure OBJECT mode for mesh updates
+    active = bpy.context.object
+    prev_mode = active.mode if active else "OBJECT"
+    if prev_mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    # Clear existing geometry (needed for Rebuild Selected)
+    me.clear_geometry()
+
+    # Bulk mesh creation via C-level from_pydata
+    me.from_pydata(mesh.verts.tolist(), [], mesh.faces.tolist())
+    me.update()
+
+    if _debug_timing:
+        t1 = time.time()
+
+    # -- Vertex colors via foreach_set --
+    if n_faces > 0 and colors is not None and len(colors) > 0:
+        color_attr = me.color_attributes.new(
+            name=vcol_name, type='FLOAT_COLOR', domain='CORNER')
+        # colors is (T*3, 3) float32 — need RGBA (T*3, 4)
+        n_loops = len(colors)
+        rgba = np.ones((n_loops, 4), dtype=np.float32)
+        rgba[:, :3] = colors
+        color_attr.data.foreach_set("color", rgba.ravel())
+
+    # -- Materials --
+    if build_materials and n_faces > 0:
+        # Build per-face material names (use tri_mat_names directly, not per-loop)
+        face_mat_names = mesh.tri_mat_names  # list[str|None] len=n_faces
+        face_colors = mesh.tri_colors        # (n_faces, 3) float32
+
+        # Resolve None names to auto-generated names
+        resolved_names = []
+        for fi in range(n_faces):
+            mn = face_mat_names[fi]
+            if mn is None:
+                col = tuple(float(x) for x in face_colors[fi])
+                qcol = _quantize_color(col)
+                mn = "STEP_" + "".join(
+                    "{0:0{1}x}".format(int(qcol[i] * 255), 2) for i in range(3))
+            resolved_names.append(mn)
+
+        # Get unique material names and assign indices
+        unique_names = list(dict.fromkeys(resolved_names))  # preserves order
+        name_to_idx = {n: i for i, n in enumerate(unique_names)}
+
+        # Ensure materials exist and attach to object
+        for mn in unique_names:
+            if mn not in bpy.data.materials:
+                # Find the color for this material
+                fi = resolved_names.index(mn)
+                col = tuple(float(x) for x in face_colors[fi])
+                add_material(mn, col[:3], link_vertex_color=False)
+            me.materials.append(bpy.data.materials[mn])
+
+        # Vectorized index assignment
+        mat_indices = np.array([name_to_idx[n] for n in resolved_names], dtype=np.int32)
+        me.polygons.foreach_set("material_index", mat_indices)
+
+    # -- Seam/sharp edges: numpy computation + bmesh application --
+    sharp_keys, seam_keys, max_v = _compute_edge_attributes(mesh)
+
+    # Build lookup sets from packed int64 keys
+    sharp_set = set(sharp_keys.tolist()) if len(sharp_keys) > 0 else set()
+    seam_set = set(seam_keys.tolist()) if len(seam_keys) > 0 else set()
+
+    # Apply via bmesh (fast: just set lookups, no math)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+
+    for e in bm.edges:
+        v0, v1 = e.verts[0].index, e.verts[1].index
+        if v0 > v1:
+            v0, v1 = v1, v0
+        key = v0 * max_v + v1
+        if key in seam_set:
+            e.seam = True
+        e.smooth = key not in sharp_set
+
+    bm.to_mesh(me)
+    bm.free()
+
+    # Custom normals must be set AFTER bmesh pass (bm.to_mesh overwrites)
+    if norms is not None and len(norms) > 0:
+        me.normals_split_custom_set(norms)
+
+    if prev_mode != "OBJECT":
+        bpy.ops.object.mode_set(mode=prev_mode)
+
+    if _debug_timing:
+        t2 = time.time()
+        _phase2_times["add_to_bm"] += t1 - t0
+        _phase2_times["bpy_update"] += t2 - t1
+
+    return mesh.matrix
+
+
+def _compute_edge_attributes(mesh):
+    """Vectorized computation of seam and sharp edge sets.
+
+    Returns (sharp_keys_packed, seam_keys_packed, max_v) where keys are
+    int64-packed edge keys: min_v * max_v + max_v_of_edge.
+    Caller uses these to look up Blender edges efficiently.
+    """
+    margin = 0.02
+    faces = mesh.faces          # (T, 3) int32
+    loop_norms = mesh.get_loop_norms()  # (T*3, 3) float32
+    verts = mesh.verts          # (V, 3) float32
+    batches = mesh.tri_batches  # (T,) int32
+
+    T = len(faces)
+    if T == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), 1
+
+    max_v = int(np.max(faces)) + 1
+
+    # Build half-edge table: 3 edges per face
+    fi = np.arange(T, dtype=np.int32)
+
+    va = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+    vb = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
+    corner_a = np.concatenate([fi * 3, fi * 3 + 1, fi * 3 + 2])
+    corner_b = np.concatenate([fi * 3 + 1, fi * 3 + 2, fi * 3])
+    face_of = np.concatenate([fi, fi, fi])
+
+    edge_min = np.minimum(va, vb)
+    edge_max = np.maximum(va, vb)
+    edge_keys = edge_min.astype(np.int64) * max_v + edge_max.astype(np.int64)
+
+    unique_keys, inverse, counts = np.unique(
+        edge_keys, return_inverse=True, return_counts=True)
+
+    # Interior edges only (shared by exactly 2 faces)
+    interior_idx = np.where(counts == 2)[0]
+    if len(interior_idx) == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), max_v
+
+    group_starts = np.zeros(len(unique_keys) + 1, dtype=np.int64)
+    np.cumsum(counts, out=group_starts[1:])
+    order = np.argsort(edge_keys)
+
+    int_starts = group_starts[interior_idx]
+    he0 = order[int_starts]
+    he1 = order[int_starts + 1]
+
+    # --- Seam: batch IDs differ ---
+    seam_mask = batches[face_of[he0]] != batches[face_of[he1]]
+    int_edge_keys = unique_keys[interior_idx]
+    seam_keys = int_edge_keys[seam_mask]
+
+    # --- Sharp: normal discontinuity ---
+    ev0 = edge_min[he0]
+    ev1 = edge_max[he0]
+
+    # Map half-edge corners to sorted edge vertices
+    he0_a_is_ev0 = (va[he0] == ev0)
+    n0_ev0_c = np.where(he0_a_is_ev0, corner_a[he0], corner_b[he0])
+    n0_ev1_c = np.where(he0_a_is_ev0, corner_b[he0], corner_a[he0])
+    he1_a_is_ev0 = (va[he1] == ev0)
+    n1_ev0_c = np.where(he1_a_is_ev0, corner_a[he1], corner_b[he1])
+    n1_ev1_c = np.where(he1_a_is_ev0, corner_b[he1], corner_a[he1])
+
+    # Get normal vectors (N_interior, 3)
+    norm0_ev0 = loop_norms[n0_ev0_c]
+    norm1_ev0 = loop_norms[n1_ev0_c]
+    norm0_ev1 = loop_norms[n0_ev1_c]
+    norm1_ev1 = loop_norms[n1_ev1_c]
+
+    # Edge direction as projection plane normal
+    plane = verts[ev0] - verts[ev1]
+    plane_len = np.linalg.norm(plane, axis=1, keepdims=True)
+    plane = plane / np.maximum(plane_len, 1e-12)
+
+    def _batch_prjtest(plane, n0, n1):
+        dot0 = np.sum(plane * n0, axis=1, keepdims=True)
+        prj0 = n0 - plane * dot0
+        prj0 = prj0 / np.maximum(np.linalg.norm(prj0, axis=1, keepdims=True), 1e-12)
+        dot1 = np.sum(plane * n1, axis=1, keepdims=True)
+        prj1 = n1 - plane * dot1
+        prj1 = prj1 / np.maximum(np.linalg.norm(prj1, axis=1, keepdims=True), 1e-12)
+        return np.sum(prj0 * prj1, axis=1) < (1.0 - margin)
+
+    sharp_ev0 = _batch_prjtest(plane, norm0_ev0, norm1_ev0)
+    sharp_ev1 = _batch_prjtest(plane, norm0_ev1, norm1_ev1)
+    sharp_keys = int_edge_keys[sharp_ev0 & sharp_ev1]
+
+    return sharp_keys, seam_keys, max_v
+
+
+def _mark_sharp_edges(bm, mesh):
+    """Mark edges as sharp based on normal discontinuity (same logic as TriMesh.add_to_bm).
+
+    Uses per-face-corner normals (loop_norms) which preserve split normals
+    across fused vertices, unlike the per-vertex norms which lose that info.
+    """
+    margin = 0.02
+
+    face_indices = mesh.faces  # (T, 3) vertex indices
+    # Use loop_norms (per-corner) — shape (T*3, 3), indexed as [face_idx*3 + corner]
+    loop_norms = mesh.get_loop_norms()  # (T*3, 3)
+
+    # Build per-face-corner normal lookup: face_corner_norms[fi] = {vert_idx: normal}
+    # Each face has 3 corners; map vertex index -> normal for that corner
+    def _get_face_corner_norms(fi):
+        """Return dict: vert_index -> normal for face fi."""
+        vi = face_indices[fi]
+        base = fi * 3
+        return {int(vi[0]): loop_norms[base],
+                int(vi[1]): loop_norms[base + 1],
+                int(vi[2]): loop_norms[base + 2]}
+
+    def _prj_norm(plane, vec):
+        prj = vec - plane * np.dot(plane, vec)
+        n = np.linalg.norm(prj)
+        if n == 0.0:
+            return np.array([0.0, 0.0, 1.0])
+        return prj / n
+
+    def _prjtest(plane, norms_list, margin):
+        p0 = _prj_norm(plane, norms_list[0])
+        dmax = 1.0
+        for n in norms_list[1:]:
+            prj = _prj_norm(plane, n)
+            dd = np.dot(p0, prj)
+            if dd < dmax:
+                dmax = dd
+        return dmax < 1.0 - margin
+
+    for e in bm.edges:
+        fi = [f.index for f in e.link_faces]
+        if len(fi) != 2:
+            continue
+
+        cn0 = _get_face_corner_norms(fi[0])
+        cn1 = _get_face_corner_norms(fi[1])
+
+        ev0 = e.verts[0].index
+        ev1 = e.verts[1].index
+
+        # Collect normals at each edge vertex from both adjacent faces
+        e_norms = [[], []]
+        if ev0 in cn0: e_norms[0].append(cn0[ev0])
+        if ev0 in cn1: e_norms[0].append(cn1[ev0])
+        if ev1 in cn0: e_norms[1].append(cn0[ev1])
+        if ev1 in cn1: e_norms[1].append(cn1[ev1])
+
+        if not e_norms[0] or not e_norms[1]:
+            continue
+
+        plane = np.array((e.verts[0].co - e.verts[1].co).normalized())
+        if _prjtest(plane, e_norms[0], margin) and _prjtest(plane, e_norms[1], margin):
+            e.smooth = False
+        else:
+            e.smooth = True
+
+
+def _apply_trimesh(obj, mesh, colors, mat_names, norms, uvs,
+                   vcol_name, build_materials):
+    """Original bmesh path for TriMesh objects."""
+    if _debug_timing:
+        print(f"[bm] {len(mesh.verts)}", end="")
+        t0 = time.time()
+    bm = bmesh.new()
+    mesh.add_to_bm(bm, edges_as_seams=True, discontinuity_as_sharp=True)
+    if _debug_timing:
+        t1 = time.time()
+    bpy_update_object_data(
+        obj.data, bm, vcol_name, colors, uvs, norms, mat_names,
+        build_materials=build_materials,
+    )
+    if _debug_timing:
+        t2 = time.time()
+        _phase2_times["add_to_bm"] += t1 - t0
+        _phase2_times["bpy_update"] += t2 - t1
+
+    return mesh.matrix
+
+
 def build_mesh(step_reader, obj, shp, lind, angd, vcol_name="Colors"):
     hacks = set([])
     if bpy.context.scene.stepper.hack_skip_zero_solids:
         hacks.add("skip_solids")
 
-    mesh: TriMesh = step_reader.build_trimesh(shp, lin_def=lind, ang_def=angd, hacks=hacks)
+    mesh, colors, mat_names, norms, uvs = precompute_mesh_data(
+        step_reader, shp, lind, angd, hacks)
 
-    mesh.fuse_verts()
-    mesh.filter_zero_area()
-    mesh.filter_same_face()
-
-    print(f"[bm] {len(mesh.verts)}", end="")
-    bm = bmesh.new()
-    mesh.add_to_bm(bm, edges_as_seams=True, discontinuity_as_sharp=True)
-    mesh.fill_empty_color()
-    # Single-pass loop data extraction instead of 4 separate iterations
-    colors, mat_names, norms, uvs = mesh.get_all_loop_data()
-    bpy_update_object_data(
-        obj.data,
-        bm,
-        vcol_name,
-        colors,
-        uvs,
-        norms,
-        mat_names,
+    return apply_mesh_to_blender(
+        obj, mesh, colors, mat_names, norms, uvs, vcol_name,
         build_materials=bpy.context.scene.stepper.build_materials,
     )
-
-    return mesh.matrix
 
 
 def build_nurbs(step_reader, shp, name):
@@ -483,6 +848,9 @@ def load_step(
 ):
     from . import importer
 
+    global _debug_timing
+    _debug_timing = bpy.context.scene.stepper.debug_timing
+
     hierarchy_flat, hierarchy_tree, hierarchy_empties = choose_hierarchy_types(htypes)
 
     filename = "".join(ntpath.basename(filepath).split(".")[:-1])
@@ -519,13 +887,82 @@ def load_step(
     all_shapes = tree.get_shapes()
     total = len(all_shapes)
 
-    # Phase 1: Pre-tessellate all unique shapes in parallel
-    n_unique_shapes = len(step_reader.sub_shapes)
-    if n_unique_shapes > 0 and not step_reader._pre_tessellated:
-        print(f"\n--- Phase 1/3: Pre-tessellating {n_unique_shapes} unique shapes ---")
-        tess_start = time.time()
-        step_reader.pre_tessellate_all(lin_deflection, ang_deflection)
-        print(f"\nTessellation done in {time.time() - tess_start:.2f}s")
+    # Tessellation is done on-demand inside build_trimesh (per shape).
+    # Pre-tessellation was removed: the threading it used caused race
+    # conditions leading to costly [re-tess] retessellations later.
+
+    # Eagerly build recovery compounds (only needed for corrupt STEP files
+    # with unresolved references).  Running it here makes the cost visible
+    # instead of hiding it inside the first build_trimesh call.
+    if step_reader.import_problems.get("Unresolved refs", 0) > 0 or True:
+        # Always try — the reader checks internally if recovery is needed
+        rec_start = time.time()
+        step_reader._build_recovery_compound()
+        rec_dt = time.time() - rec_start
+        if rec_dt > 0.5:
+            n_compounds = len(step_reader._recovery_compounds) if step_reader._recovery_compounds else 0
+            print(f"\n--- Recovery compounds built in {rec_dt:.2f}s ({n_compounds} compounds) ---")
+
+    # Pre-compute mesh data for all unique shapes before the bpy loop.
+    # This lets us batch-create materials upfront and keeps the Phase 2
+    # loop focused on the fast bmesh/bpy work.
+    _reset_phase2_times()
+    hacks = set()
+    if bpy.context.scene.stepper.hack_skip_zero_solids:
+        hacks.add("skip_solids")
+    build_materials = bpy.context.scene.stepper.build_materials
+
+    # Identify unique shapes (first occurrence per shape_name)
+    unique_shapes = {}  # shape_name -> (shp, part_name)
+    for shp, node_index in all_shapes:
+        if shp is None:
+            continue
+        _, _, tag, part_name, _, _, _ = tree.nodes[node_index].get_values()
+        shape_name = "tt_" + repr(tag)
+        if shape_name not in unique_shapes:
+            unique_shapes[shape_name] = (shp, part_name)
+
+    precomputed = {}  # shape_name -> (mesh, colors, mat_names, norms, uvs)
+    n_unique = len(unique_shapes)
+    if n_unique > 0:
+        print(f"\n--- Phase 1/3: Pre-computing {n_unique} unique meshes ---")
+        precomp_start = time.time()
+
+        for si, (sname, (shp, part_name)) in enumerate(unique_shapes.items()):
+            try:
+                if _debug_timing:
+                    t_shape = time.time()
+                precomputed[sname] = precompute_mesh_data(
+                    step_reader, shp, lin_deflection, ang_deflection, hacks)
+                if _debug_timing:
+                    dt_shape = time.time() - t_shape
+                    if dt_shape > 2.0:
+                        pname = part_name or sname
+                        print(f"\n  [{pname}: {dt_shape:.1f}s]", end="", flush=True)
+            except Exception as e:
+                print(f"\nWarning: precompute failed for {sname} ({part_name}): {e}")
+
+        print(f"\nPre-compute done in {time.time() - precomp_start:.2f}s")
+
+    # Pre-create all materials so bpy_update_object_data doesn't do it per-face
+    if build_materials and precomputed:
+        all_mat_info = {}  # mat_name -> color
+        for mesh, colors, mat_names, norms, uvs in precomputed.values():
+            for ci, mname in enumerate(mat_names):
+                if mname:
+                    if mname not in all_mat_info:
+                        c = colors[ci]
+                        all_mat_info[mname] = tuple(float(x) for x in c)
+                else:
+                    c = colors[ci]
+                    col = tuple(float(x) for x in c) if ci < len(colors) and c[0] >= 0.0 else (0.5, 0.5, 0.5)
+                    col = _quantize_color(col)
+                    auto_name = "STEP_" + "".join("{0:0{1}x}".format(int(col[i] * 255), 2) for i in range(3))
+                    if auto_name not in all_mat_info:
+                        all_mat_info[auto_name] = col
+        for mname, col in all_mat_info.items():
+            if mname not in bpy.data.materials:
+                add_material(mname, col, link_vertex_color=False)
 
     print(f"\n--- Phase 2/3: Building {total} Blender objects ---")
     wm.progress_begin(0, total)
@@ -541,36 +978,40 @@ def load_step(
 
         # Shape found in leaf
         if shp:
-            print("\nBuilding ({}/{}): {} ".format(i + 1, total, name), end="", flush=True)
-            print("[T" + repr(shp.ShapeType()) + "]", end="", flush=True)
+            if _debug_timing:
+                print("\nBuilding ({}/{}): {} ".format(i + 1, total, name), end="", flush=True)
+                print("[T" + repr(shp.ShapeType()) + "]", end="", flush=True)
 
-            # If object already build, just copy it, using linked mesh data
+            # If object already built, just copy it using linked mesh data
             if shape_name in created_names:
-                print("[Link]", end="", flush=True)
+                if _debug_timing:
+                    print("[Link]", end="", flush=True)
 
                 source_obj = created_names[shape_name]
                 obj = source_obj.copy()
                 created_objs.append(obj)
             else:
-                print("[Build]", end="", flush=True)
+                if _debug_timing:
+                    print("[Build]", end="", flush=True)
 
-                # Create new mesh and object from scratch
                 obj = create_new_obj_with_mesh(name)
-                bpy.ops.object.mode_set(mode="OBJECT")
-                build_mesh(step_reader, obj, shp, lin_deflection, ang_deflection)
+
+                if shape_name in precomputed:
+                    # Use pre-computed data — only bpy/bmesh work on main thread
+                    mesh, colors, mat_names, norms, uvs = precomputed[shape_name]
+                    apply_mesh_to_blender(
+                        obj, mesh, colors, mat_names, norms, uvs,
+                        build_materials=build_materials)
+                else:
+                    # Fallback for shapes that failed precompute
+                    build_mesh(step_reader, obj, shp, lin_deflection, ang_deflection)
 
                 # Track parts that produced no geometry
                 if obj.data is not None and len(obj.data.vertices) == 0:
                     step_reader.failed_parts.append(name)
 
-                # TODO: nurbs changes here
-                # obj = build_nurbs(step_reader, shp, name)
-
                 created_objs.append(obj)
                 created_names[shape_name] = obj
-
-                # bpy.ops.object.mode_set(mode="OBJECT")
-                # build_mesh(step_reader, obj, shp, lin_deflection, ang_deflection)
 
         # No shape in leaf, empty creation enabled, do this
         elif hierarchy_empties:
@@ -593,6 +1034,8 @@ def load_step(
             created_uuid[self_uuid] = obj
 
     # assert len(created_objs) == len(shapes_labels)
+    if _debug_timing:
+        _print_phase2_times()
     print("\n" + repr(step_reader.import_problems))
 
     # remove all temporary links
@@ -755,6 +1198,12 @@ class PG_Stepper(bpy.types.PropertyGroup):
         default=0.5,
         min=0.002,
         # max=2.0,
+    )
+
+    debug_timing: bpy.props.BoolProperty(
+        name="Debug timing",
+        description="Print detailed timing information during import",
+        default=False,
     )
 
     fix_ascii_file: bpy.props.StringProperty(
@@ -1215,12 +1664,12 @@ class STEP_PT_STEPper_Debug(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        prg = context.scene.stepper
 
         bxp = layout.box()
         bxp.label(text="Enforce ASCII")
         col = bxp.row().column(align=True)
 
-        prg = context.scene.stepper
         row = col.row()
         row.prop(prg, "fix_ascii_file")
         row = col.row()
@@ -1291,6 +1740,9 @@ class STEP_AddonPreferences(bpy.types.AddonPreferences):
 
         row = layout.row()
         row.prop(bpy.context.scene.stepper, "simpler_parameters")
+
+        row = layout.row()
+        row.prop(bpy.context.scene.stepper, "debug_timing")
 
         # row = layout.row()
         # row.prop(bpy.context.scene.stepper, "hierarchy_types")

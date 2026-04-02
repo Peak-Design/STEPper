@@ -26,7 +26,7 @@ bl_info = {
     "author": "ambi, Peak-Design",
     "description": "STEP OpenCASCADE import",
     "blender": (5, 1, 0),
-    "version": (2, 1, 0),
+    "version": (2, 1, 1),
     "location": "3D View > Tools panel > Stepper",
     "category": "Import",
 }
