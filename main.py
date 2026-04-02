@@ -38,7 +38,7 @@ from .trimesh import TriMesh
 # LRU file cache with max entry limit
 MAX_FILE_CACHE = 10
 global_file_cache = OrderedDict()
-must_have_python = (3, 11)
+must_have_python = (3, 13)
 
 # Color quantization precision for material merging (~1.5% tolerance)
 _COLOR_MERGE_PRECISION = 64
@@ -444,21 +444,31 @@ def build_nurbs(step_reader, shp, name):
         return bpy.context.view_layer.objects.active
 
 
-def _show_failed_parts_popup(failed_parts):
-    """Show a Blender popup dialog listing parts that failed to import."""
+def _show_import_issues_popup(failed_parts, recovered_parts):
+    """Show a Blender popup dialog listing parts that had import problems."""
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text=f"{len(failed_parts)} part(s) produced no geometry:")
-        col = layout.column(align=True)
-        for name in failed_parts[:30]:
-            col.label(text=f"    {name}", icon="ERROR")
-        if len(failed_parts) > 30:
-            col.label(text=f"    ... and {len(failed_parts) - 30} more")
-        layout.separator()
-        layout.label(text="Usually caused by unresolved references in the STEP file.")
+        if recovered_parts:
+            layout.label(text=f"{len(recovered_parts)} part(s) had corrupted geometry and were recovered:")
+            col = layout.column(align=True)
+            for name in recovered_parts[:20]:
+                col.label(text=f"    {name}", icon="FILE_REFRESH")
+            if len(recovered_parts) > 20:
+                col.label(text=f"    ... and {len(recovered_parts) - 20} more")
+            col.label(text="    Recovered parts may have missing faces or appearance.", icon="INFO")
+            layout.separator()
+        if failed_parts:
+            layout.label(text=f"{len(failed_parts)} part(s) produced no geometry:")
+            col = layout.column(align=True)
+            for name in failed_parts[:20]:
+                col.label(text=f"    {name}", icon="ERROR")
+            if len(failed_parts) > 20:
+                col.label(text=f"    ... and {len(failed_parts) - 20} more")
+            col.label(text="    Usually caused by unresolved references in the STEP file.", icon="INFO")
 
-    bpy.context.window_manager.popup_menu(draw, title="STEPper Import Warning", icon="ERROR")
+    icon = "ERROR" if failed_parts else "INFO"
+    bpy.context.window_manager.popup_menu(draw, title="STEPper Import Warning", icon=icon)
 
 
 def load_step(
@@ -687,6 +697,11 @@ def load_step(
     if step_reader.skipped_shapes:
         print(f"  Skipped: {len(step_reader.skipped_shapes)} shapes")
         has_problems = True
+    if step_reader.recovered_parts:
+        print(f"  Recovered parts ({len(step_reader.recovered_parts)}):")
+        for rp_name in step_reader.recovered_parts:
+            print(f"    - {rp_name}")
+        has_problems = True
     if step_reader.failed_parts:
         print(f"  Failed parts ({len(step_reader.failed_parts)}):")
         for fp_name in step_reader.failed_parts:
@@ -696,8 +711,8 @@ def load_step(
         print(f"  No warnings")
     print(f"{'='*50}")
 
-    # Return list of failed part names (empty list = full success)
-    return step_reader.failed_parts
+    # Return lists of failed/recovered part names (empty = full success)
+    return step_reader.failed_parts, step_reader.recovered_parts
 
 
 class PG_Stepper(bpy.types.PropertyGroup):
@@ -894,6 +909,7 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
 
         # iterate through the selected files
         all_failed_parts = []
+        all_recovered_parts = []
         for j, i in enumerate(import_files):
             # generate full path to file
             path_to_file = os.path.join(folder, i)
@@ -910,19 +926,18 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
             if result is False:
                 self.report({"ERROR"}, "STEP file could not be opened. Possibly damaged file.")
                 return {"CANCELLED"}
-            if result:
-                all_failed_parts.extend(result)
+            failed, recovered = result
+            all_failed_parts.extend(failed)
+            all_recovered_parts.extend(recovered)
 
-        if all_failed_parts:
-            # Show warning popup listing parts that failed to import
-            msg = f"{len(all_failed_parts)} part(s) imported with no geometry:\n"
-            for fp_name in all_failed_parts[:20]:
-                msg += f"  - {fp_name}\n"
-            if len(all_failed_parts) > 20:
-                msg += f"  ... and {len(all_failed_parts) - 20} more\n"
-            msg += "This is usually caused by unresolved references in the STEP file."
-            self.report({"WARNING"}, msg)
-            _show_failed_parts_popup(all_failed_parts)
+        if all_failed_parts or all_recovered_parts:
+            _show_import_issues_popup(all_failed_parts, all_recovered_parts)
+            if all_failed_parts:
+                msg = f"{len(all_failed_parts)} part(s) imported with no geometry."
+                self.report({"WARNING"}, msg)
+            if all_recovered_parts:
+                msg = f"{len(all_recovered_parts)} part(s) recovered from corrupted geometry."
+                self.report({"INFO"}, msg)
 
         return {"FINISHED"}
 
@@ -1116,6 +1131,9 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
                 if tag == sel_tag:
                     rebuilt_meshes.add(sel_tag)
                     print("Rebuilding:", sel_tag, obj.data.name)
+                    # Reset pre-tessellation flag so shapes get re-tessellated
+                    # with the new deflection values
+                    step_reader._pre_tessellated = False
                     build_mesh(step_reader, obj, shp, lin_def, ang_def)
                     obj.display_type = "TEXTURED"
                     build_tags.add(obj["STEP_tag"])

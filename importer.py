@@ -14,10 +14,12 @@
 # Copyright 2021 Tommi Hyppänen
 #
 # Modified 2026 by Peak-Design:
-#   - Updated to pythonocc-core 7.9.0 (OpenCASCADE 7.9.0)
+#   - Updated to pythonocc-core 7.9.3 (OpenCASCADE 7.9.3)
 #   - Fixed tessellation race conditions and re-tessellation fallback
 #   - Improved corrupt STEP file handling
 #   - Added failed parts diagnostics
+#   - Added ShapeFix healing and per-face entity recovery for broken shapes
+#   - Scoped face recovery to only unmapped entities (prevents geometry bleed)
 
 import sys
 from os.path import dirname
@@ -39,12 +41,13 @@ from . import trimesh
 from . import nurbs
 
 importlib.reload(trimesh)
-from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRep import BRep_Builder, BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert, BRepBuilderAPI_Transform
 from OCC.Core.BRepLProp import BRepLProp_SLProps
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.BRepTools import breptools
+from OCC.Core.ShapeFix import ShapeFix_Shape
 from OCC.Core.GeomAPI import GeomAPI_ProjectPointOnSurf
 from OCC.Core.GeomConvert import geomconvert_SurfaceToBSplineSurface
 from OCC.Core.GeomLProp import GeomLProp_SLProps
@@ -81,10 +84,22 @@ from OCC.Core.TopLoc import TopLoc_Location
 
 # from OCC.Core.TopExp import topexp_MapShapes
 # from OCC.Core.TopTools import TopTools_MapOfShape, TopTools_IndexedMapOfShape
-from OCC.Core.TopoDS import TopoDS_Shape, topods
+from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Compound, topods
 from OCC.Core.XCAFApp import XCAFApp_Application_GetApplication
 from OCC.Core.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ColorGen, XCAFDoc_ColorSurf, XCAFDoc_ColorCurv
 from OCC.Core.XSControl import XSControl_WorkSession
+from OCC.Core.StepBasic import StepBasic_ProductDefinition
+from OCC.Core.StepRepr import (
+    StepRepr_ProductDefinitionShape,
+    StepRepr_ShapeRepresentationRelationship,
+)
+from OCC.Core.StepShape import (
+    StepShape_AdvancedBrepShapeRepresentation,
+    StepShape_ManifoldSolidBrep,
+    StepShape_ManifoldSurfaceShapeRepresentation,
+    StepShape_ShapeDefinitionRepresentation,
+    StepShape_ShellBasedSurfaceModel,
+)
 
 import OCC
 
@@ -301,9 +316,9 @@ class ReadSTEP:
         colorset = False
         colortype = None
 
-        c_gen = self.color_tool.GetColor(label, XCAFDoc_ColorGen, c)
-        c_surf = self.color_tool.GetColor(label, XCAFDoc_ColorSurf, c)
-        c_curv = self.color_tool.GetColor(label, XCAFDoc_ColorCurv, c)
+        c_gen = self.color_tool.GetColor(label, int(XCAFDoc_ColorGen), c)
+        c_surf = self.color_tool.GetColor(label, int(XCAFDoc_ColorSurf), c)
+        c_curv = self.color_tool.GetColor(label, int(XCAFDoc_ColorCurv), c)
         if c_gen or c_surf or c_curv:
             colorset = True
             colortype = c_gen * 1 + c_surf * 2 + c_curv * 3
@@ -507,6 +522,7 @@ class ReadSTEP:
                 print("DataExchange: Transfer done")
 
         self.doc = doc
+        self._xcaf_reader = step_reader
 
     def transfer_simple(self, fname):
         # see stepanalyzer.py for license details
@@ -556,8 +572,10 @@ class ReadSTEP:
         self.tag_info = {}
         self.skipped_shapes = set([])
         self.import_problems = {"Triangulation": 0, "Undefined normals": 0, "Empty shape": 0}
-        self.failed_parts = []  # List of (name, reason) for parts that produced no geometry
+        self.failed_parts = []  # List of names for parts that produced no geometry
+        self.recovered_parts = []  # List of names for parts recovered via per-face transfer
         self._pre_tessellated = False
+        self._recovery_compounds = None  # Lazy-built per-shape recovery compounds
 
     def read_file(self, filename):
         """Returns list of tuples (topods_shape, label, color)
@@ -818,6 +836,272 @@ class ReadSTEP:
 
         return trimesh.TriMesh(verts=verts, tris=tri_data)
 
+    def _build_recovery_compounds(self):
+        """Build per-shape recovery compounds for parts that failed to transfer.
+
+        For each empty shape, we need to recover exactly the faces belonging
+        to that shape — not faces from other parts.  The approach:
+
+        1. Index all AdvancedFace entities by hash for hierarchy matching.
+        2. Build a ProductDefinition → Representation mapping by navigating:
+           ShapeDefinitionRepresentation → ProductDefinitionShape → PD, and
+           ShapeRepresentationRelationship to resolve generic → specific reprs.
+        3. For each failed representation (not in the TransientProcess),
+           traverse its hierarchy to collect its AdvancedFace entity indices.
+        4. Transfer each repr's faces into a separate compound.
+        5. Map each compound by ProductDefinition entity number so that
+           _get_recovery_compound(shape) can match via EntityFromShapeResult.
+
+        Results are cached in self._recovery_compounds (dict: PD# → compound).
+        """
+        if self._recovery_compounds is not None:
+            return  # already built
+
+        self._recovery_compounds = {}
+        try:
+            basic_reader = self._xcaf_reader.ChangeReader()
+            tr = basic_reader.WS().TransferReader()
+            tp = tr.TransientProcess()
+            xcaf_model = basic_reader.StepModel()
+            ne = xcaf_model.NbEntities()
+
+            # Index all AdvancedFace entities by hash for hierarchy matching
+            af_hash_to_idx = {}
+            for i in range(1, ne + 1):
+                ent = xcaf_model.Value(i)
+                if ent is not None and ent.DynamicType().Name() == 'StepShape_AdvancedFace':
+                    af_hash_to_idx[hash(ent)] = i
+
+            if not af_hash_to_idx:
+                return
+
+            def _collect_faces_from_shell(shell, face_set):
+                """Collect AdvancedFace model indices from a ConnectedFaceSet."""
+                for m in range(1, shell.NbCfsFaces() + 1):
+                    idx = af_hash_to_idx.get(hash(shell.CfsFacesValue(m)))
+                    if idx is not None:
+                        face_set.add(idx)
+
+            # --- Build ProductDefinition → Representation mapping ---
+
+            # Resolve generic ShapeRepresentation → specific MSSR/ABSR
+            # via ShapeRepresentationRelationship
+            generic_to_specific = {}
+            for i in range(1, ne + 1):
+                ent = xcaf_model.Value(i)
+                if ent is None or ent.DynamicType().Name() != 'StepRepr_ShapeRepresentationRelationship':
+                    continue
+                srr = StepRepr_ShapeRepresentationRelationship.DownCast(ent)
+                rep1, rep2 = srr.Rep1(), srr.Rep2()
+                t1 = rep1.DynamicType().Name() if rep1 else ""
+                t2 = rep2.DynamicType().Name() if rep2 else ""
+                if 'ManifoldSurface' in t2 or 'AdvancedBrep' in t2:
+                    generic_to_specific[xcaf_model.Number(rep1)] = rep2
+                elif 'ManifoldSurface' in t1 or 'AdvancedBrep' in t1:
+                    generic_to_specific[xcaf_model.Number(rep2)] = rep1
+
+            # SDR → PDS → PD, giving us PD entity number → repr entity
+            pd_num_to_repr_ent = {}
+            for i in range(1, ne + 1):
+                ent = xcaf_model.Value(i)
+                if ent is None or ent.DynamicType().Name() != 'StepShape_ShapeDefinitionRepresentation':
+                    continue
+                sdr = StepShape_ShapeDefinitionRepresentation.DownCast(ent)
+                used_repr = sdr.UsedRepresentation()
+                if used_repr is None:
+                    continue
+                actual_repr = generic_to_specific.get(
+                    xcaf_model.Number(used_repr), used_repr)
+                defn = sdr.Definition()
+                if defn is None:
+                    continue
+                try:
+                    pds = StepRepr_ProductDefinitionShape.DownCast(defn.Value())
+                    pd = StepBasic_ProductDefinition.DownCast(
+                        pds.Definition().Value())
+                    pd_num_to_repr_ent[xcaf_model.Number(pd)] = actual_repr
+                except Exception:
+                    pass
+
+            # --- Collect faces per failed representation ---
+            repr_num_to_faces = {}  # repr entity number → set of face indices
+
+            for i in range(1, ne + 1):
+                ent = xcaf_model.Value(i)
+                if ent is None or tp.MapIndex(ent) > 0:
+                    continue
+                tname = ent.DynamicType().Name()
+                faces = set()
+
+                if tname == 'StepShape_ManifoldSurfaceShapeRepresentation':
+                    mssr = StepShape_ManifoldSurfaceShapeRepresentation.DownCast(ent)
+                    for j in range(1, mssr.NbItems() + 1):
+                        item = mssr.ItemsValue(j)
+                        if item.DynamicType().Name() != 'StepShape_ShellBasedSurfaceModel':
+                            continue
+                        sbsm = StepShape_ShellBasedSurfaceModel.DownCast(item)
+                        for k in range(1, sbsm.NbSbsmBoundary() + 1):
+                            shell_select = sbsm.SbsmBoundaryValue(k)
+                            shell = None
+                            try:
+                                shell = shell_select.ClosedShell()
+                            except Exception:
+                                pass
+                            if shell is None:
+                                try:
+                                    shell = shell_select.OpenShell()
+                                except Exception:
+                                    pass
+                            if shell is not None:
+                                _collect_faces_from_shell(shell, faces)
+
+                elif tname == 'StepShape_AdvancedBrepShapeRepresentation':
+                    absr = StepShape_AdvancedBrepShapeRepresentation.DownCast(ent)
+                    for j in range(1, absr.NbItems() + 1):
+                        item = absr.ItemsValue(j)
+                        if item.DynamicType().Name() == 'StepShape_ManifoldSolidBrep':
+                            msb = StepShape_ManifoldSolidBrep.DownCast(item)
+                            outer = msb.Outer()
+                            if outer is not None:
+                                _collect_faces_from_shell(outer, faces)
+
+                if faces:
+                    repr_num_to_faces[i] = faces
+
+            if not repr_num_to_faces:
+                return
+
+            # --- Build PD# → repr# mapping (only for failed reprs) ---
+            pd_num_to_repr_num = {}
+            for pd_num, repr_ent in pd_num_to_repr_ent.items():
+                repr_num = xcaf_model.Number(repr_ent)
+                if repr_num in repr_num_to_faces:
+                    pd_num_to_repr_num[pd_num] = repr_num
+
+            # --- Transfer faces per repr into compounds ---
+            reader = STEPControl_Reader()
+            status = reader.ReadFile(self.filename)
+            if status != IFSelect_RetDone:
+                return
+
+            recovery_model = reader.StepModel()
+            repr_num_to_compound = {}
+
+            for repr_num, face_indices in repr_num_to_faces.items():
+                print(f"[recovering {len(face_indices)} faces]", end="", flush=True)
+                builder = BRep_Builder()
+                compound = TopoDS_Compound()
+                builder.MakeCompound(compound)
+                ok = 0
+                for idx in face_indices:
+                    try:
+                        if reader.TransferEntity(recovery_model.Value(idx)):
+                            ns = reader.NbShapes()
+                            if ns > 0:
+                                builder.Add(compound, reader.Shape(ns))
+                                ok += 1
+                    except Exception:
+                        pass
+                print(f"[{ok}/{len(face_indices)} OK]", end="", flush=True)
+                if ok > 0:
+                    repr_num_to_compound[repr_num] = compound
+
+            # --- Build final PD# → compound map ---
+            for pd_num, repr_num in pd_num_to_repr_num.items():
+                compound = repr_num_to_compound.get(repr_num)
+                if compound is not None:
+                    self._recovery_compounds[pd_num] = compound
+
+            # Store TransferReader reference for shape→entity lookup
+            self._transfer_reader = tr
+
+        except Exception as e:
+            print(f"[recovery failed: {e}]", end="", flush=True)
+
+    def _get_recovery_compound(self, shape):
+        """Return the recovery compound for a specific empty shape, or None.
+
+        Uses EntityFromShapeResult to find the STEP ProductDefinition entity
+        for the shape, then looks up the pre-built compound for that PD.
+        """
+        self._build_recovery_compounds()
+        if not self._recovery_compounds:
+            return None
+
+        # Find the ProductDefinition entity for this shape
+        tr = getattr(self, '_transfer_reader', None)
+        if tr is None:
+            return None
+
+        model = self._xcaf_reader.ChangeReader().StepModel()
+        for mode in [-1, 1]:
+            try:
+                ent = tr.EntityFromShapeResult(shape, mode)
+                if ent is not None:
+                    pd_num = model.Number(ent)
+                    compound = self._recovery_compounds.get(pd_num)
+                    if compound is not None:
+                        return compound
+            except Exception:
+                pass
+
+        return None
+
+    def _heal_shape(self, shp):
+        """Attempt to repair a shape using ShapeFix.
+
+        Returns the healed shape, or the original if healing fails or makes
+        things worse.
+        """
+        try:
+            fixer = ShapeFix_Shape(shp)
+            fixer.Perform()
+            healed = fixer.Shape()
+            # Only use healed shape if it actually has faces
+            ex = TopExp_Explorer(healed, TopAbs_FACE)
+            if ex.More():
+                return healed
+        except Exception:
+            pass
+        return shp
+
+    def _tessellate_shape(self, shp, lin_def, ang_def):
+        """Tessellate a shape, retrying with relaxed tolerances and shape
+        healing if the first attempt produces no triangulation."""
+        breptools().Clean(shp)
+        brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
+        brepmesh.Perform()
+
+        # Check if tessellation produced any triangles
+        test_loc = TopLoc_Location()
+        ex = TopExp_Explorer(shp, TopAbs_FACE)
+        has_tris = False
+        while ex.More():
+            face = topods.Face(ex.Current())
+            if BRep_Tool().Triangulation(face, test_loc) is not None:
+                has_tris = True
+                break
+            ex.Next()
+
+        if has_tris:
+            return shp
+
+        # Retry 1: heal shape then tessellate
+        healed = self._heal_shape(shp)
+        if healed is not shp:
+            breptools().Clean(healed)
+            brepmesh = BRepMesh_IncrementalMesh(healed, lin_def, False, ang_def, False)
+            brepmesh.Perform()
+            print("[healed]", end="", flush=True)
+            return healed
+
+        # Retry 2: relax tolerances significantly
+        breptools().Clean(shp)
+        brepmesh = BRepMesh_IncrementalMesh(shp, lin_def * 4.0, False, ang_def * 2.0, False)
+        brepmesh.Perform()
+        print("[relaxed-tess]", end="", flush=True)
+        return shp
+
     def build_trimesh(self, shape, lin_def=0.8, ang_def=0.5, hacks=set([])):
         out_mesh = trimesh.TriMesh()
         out_mesh.matrix = np.eye(4, dtype=np.float32)
@@ -827,7 +1111,32 @@ class ReadSTEP:
             self.skipped_shapes.add(self.shape_label[shape].GetLabelName())
             return out_mesh
 
+        # Check if the main shape has any faces at all; if not, try
+        # per-face entity recovery from the STEP file before iterating.
+        all_faces = TopExp_Explorer(shape, TopAbs_FACE)
+        all_subs_empty = not all_faces.More()
+        if all_subs_empty:
+            for ss in self.sub_shapes.get(shape, []):
+                ex_ss = TopExp_Explorer(ss, TopAbs_FACE)
+                if ex_ss.More():
+                    all_subs_empty = False
+                    break
+
+        recovered_shape = None
+        if all_subs_empty:
+            recovered_shape = self._get_recovery_compound(shape)
+            if recovered_shape is not None:
+                # Use recovered compound as the sole shape; discard sub_shapes
+                # since we no longer have XCAF label associations.
+                self.face_colors[recovered_shape] = self.face_colors.get(shape)
+                self.face_color_priority[recovered_shape] = self.face_color_priority.get(shape, 0)
+                label = self.shape_label.get(shape)
+                if label is not None:
+                    self.recovered_parts.append(label.GetLabelName())
+
         iter_shapes = [shape] + self.sub_shapes[shape]
+        if recovered_shape is not None:
+            iter_shapes = [recovered_shape]
         iter_shapes.sort(key=lambda x: x.Checked())
 
         face_data = OrderedDict()
@@ -835,7 +1144,7 @@ class ReadSTEP:
 
         # Iterate over the main shape and its sub shapes
         for shp_i, shp in enumerate(iter_shapes):
-            col = self.face_colors[shp]
+            col = self.face_colors.get(shp)
             if col is not None:
                 col_rgb = b_RGB(col)
                 col_name = b_colorname(col)
@@ -845,14 +1154,20 @@ class ReadSTEP:
             # Subshape transforms can be different from the mainshape transform
             ex = TopExp_Explorer(shp, TopAbs_FACE)
             if not ex.More():
-                self.import_problems["Empty shape"] += 1
-                continue
+                # Shape has no faces — try healing before giving up
+                healed = self._heal_shape(shp)
+                if healed is not shp:
+                    shp = healed
+                    ex = TopExp_Explorer(shp, TopAbs_FACE)
+                if not ex.More():
+                    self.import_problems["Empty shape"] += 1
+                    continue
 
             # Skip meshing if already done by pre_tessellate_all
             if not self._pre_tessellated:
-                breptools().Clean(shp)
-                brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
-                brepmesh.Perform()
+                shp = self._tessellate_shape(shp, lin_def, ang_def)
+                # Re-create explorer after potential shape replacement from healing
+                ex = TopExp_Explorer(shp, TopAbs_FACE)
             else:
                 # Verify pre-tessellation succeeded; if not, re-tessellate.
                 # Threading race conditions in pre_tessellate_all can cause
@@ -861,9 +1176,8 @@ class ReadSTEP:
                 test_loc = TopLoc_Location()
                 test_face = topods.Face(ex.Current())
                 if BRep_Tool().Triangulation(test_face, test_loc) is None:
-                    breptools().Clean(shp)
-                    brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
-                    brepmesh.Perform()
+                    shp = self._tessellate_shape(shp, lin_def, ang_def)
+                    ex = TopExp_Explorer(shp, TopAbs_FACE)
                     print("[re-tess]", end="", flush=True)
             trf = shp.Location().Transformation()
             # Iterate through faces with TopExp_Explorer
@@ -871,7 +1185,13 @@ class ReadSTEP:
                 exc = ex.Current()
                 face = topods.Face(exc)
 
-                mesh = self.triangulate_face(face, trf)
+                try:
+                    mesh = self.triangulate_face(face, trf)
+                except Exception:
+                    # Individual face tessellation/triangulation error —
+                    # skip this face but keep processing the rest
+                    mesh = None
+
                 if mesh:
                     # If shape or sub-shape has defined color, set it so
                     mesh.set_batch(batch)

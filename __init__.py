@@ -14,17 +14,19 @@
 # Copyright 2021 Tommi Hyppänen
 #
 # Modified 2026 by Peak-Design:
-#   - Ported to Blender 5.0 API
-#   - Updated to pythonocc-core 7.9.0 (OpenCASCADE 7.9.0)
-#   - Fixed tessellation race conditions and corrupt STEP handling
+#   - Ported to Blender 5.0 API (v2.0.0)
+#   - Fixed error in importing files with only single part with tree hierarchy option enabled
 #   - Added failed parts popup and import diagnostics
+#   - Updated to pythonocc-core 7.9.3 / Python 3.13 for Blender 5.1 (v2.1.0)
+#   - Fixed tessellation race conditions and corrupt STEP handling
+#   - Added ShapeFix healing for shapes with corrupted/missing geometry
 
 bl_info = {
     "name": "STEPper",
     "author": "ambi, Peak-Design",
     "description": "STEP OpenCASCADE import",
-    "blender": (5, 0, 0),
-    "version": (2, 0, 0),
+    "blender": (5, 1, 0),
+    "version": (2, 1, 0),
     "location": "3D View > Tools panel > Stepper",
     "category": "Import",
 }

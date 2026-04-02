@@ -36,16 +36,16 @@ def initialize_occt_libraries(occt_essentials_path) -> None:
 
 # on windows, see #1347
 if platform.system() == "Windows":
-    # For bundled deployment (e.g. Blender addon), DLLs are in this directory
-    _this_dir = os.path.dirname(__file__)
-    if os.path.isdir(_this_dir):
-        os.add_dll_directory(_this_dir)
-    else:
-        try:
-            from .config import OCCT_ESSENTIALS_ROOT
-            initialize_occt_libraries(occt_essentials_path=OCCT_ESSENTIALS_ROOT)
-        except ImportError:
-            if "OCCT_ESSENTIALS_ROOT" in os.environ:
-                initialize_occt_libraries(
-                    occt_essentials_path=os.environ["OCCT_ESSENTIALS_ROOT"]
-                )
+    try:
+        # OCC_ESSENTIALS_ROOT was defined at build time
+        # and is available in config.py
+        from .config import OCCT_ESSENTIALS_ROOT
+
+        initialize_occt_libraries(occt_essentials_path=OCCT_ESSENTIALS_ROOT)
+    except (
+        ImportError
+    ):  # anyway, still possible to set up the OCC_ESSENTIALS_ROOT env var
+        if "OCCT_ESSENTIALS_ROOT" in os.environ:
+            initialize_occt_libraries(
+                occt_essentials_path=os.environ["OCCT_ESSENTIALS_ROOT"]
+            )
