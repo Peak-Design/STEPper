@@ -349,7 +349,7 @@ def _print_phase2_times():
     print(f"  {'TOTAL':20s}: {total:7.2f}s")
 
 
-def precompute_mesh_data(step_reader, shp, lind, angd, hacks):
+def precompute_mesh_data(step_reader, shp, lind, angd, hacks, part_name=""):
     """Compute mesh + loop data from OCC shape.
 
     Returns (mesh, colors, mat_names, norms, uvs).
@@ -358,7 +358,8 @@ def precompute_mesh_data(step_reader, shp, lind, angd, hacks):
     if _debug_timing:
         t0 = time.time()
 
-    mesh = step_reader.build_trimesh(shp, lin_def=lind, ang_def=angd, hacks=hacks)
+    mesh = step_reader.build_trimesh(shp, lin_def=lind, ang_def=angd, hacks=hacks,
+                                     part_name=part_name)
 
     if _debug_timing:
         t1 = time.time()
@@ -485,30 +486,35 @@ def _apply_native_mesh(obj, mesh, colors, mat_names, norms,
         mat_indices = np.array([name_to_idx[n] for n in resolved_names], dtype=np.int32)
         me.polygons.foreach_set("material_index", mat_indices)
 
-    # -- Seam/sharp edges: numpy computation + bmesh application --
+    # -- Seam/sharp edges: numpy computation + direct attribute API --
+    # IMPORTANT: we must NOT use a bmesh round-trip here because
+    # bm.from_mesh → bm.to_mesh can reorder loops, which breaks the
+    # normals_split_custom_set mapping (norms follow from_pydata order).
     sharp_keys, seam_keys, max_v = _compute_edge_attributes(mesh)
 
-    # Build lookup sets from packed int64 keys
-    sharp_set = set(sharp_keys.tolist()) if len(sharp_keys) > 0 else set()
-    seam_set = set(seam_keys.tolist()) if len(seam_keys) > 0 else set()
+    n_edges = len(me.edges)
+    if n_edges > 0 and (len(sharp_keys) > 0 or len(seam_keys) > 0):
+        # Get edge vertex pairs via foreach_get
+        edge_verts = np.zeros(n_edges * 2, dtype=np.int32)
+        me.edges.foreach_get('vertices', edge_verts)
+        edge_verts = edge_verts.reshape(-1, 2)
 
-    # Apply via bmesh (fast: just set lookups, no math)
-    bm = bmesh.new()
-    bm.from_mesh(me)
+        v0 = np.minimum(edge_verts[:, 0], edge_verts[:, 1])
+        v1 = np.maximum(edge_verts[:, 0], edge_verts[:, 1])
+        edge_keys = v0.astype(np.int64) * max_v + v1.astype(np.int64)
 
-    for e in bm.edges:
-        v0, v1 = e.verts[0].index, e.verts[1].index
-        if v0 > v1:
-            v0, v1 = v1, v0
-        key = v0 * max_v + v1
-        if key in seam_set:
-            e.seam = True
-        e.smooth = key not in sharp_set
+        if len(seam_keys) > 0:
+            seam_arr = np.isin(edge_keys, seam_keys)
+            me.edges.foreach_set('use_seam', seam_arr.tolist())
 
-    bm.to_mesh(me)
-    bm.free()
+        if len(sharp_keys) > 0:
+            sharp_arr = np.isin(edge_keys, sharp_keys)
+            sharp_attr = me.attributes.get('sharp_edge')
+            if sharp_attr is None:
+                sharp_attr = me.attributes.new(
+                    name='sharp_edge', type='BOOLEAN', domain='EDGE')
+            sharp_attr.data.foreach_set('value', sharp_arr.tolist())
 
-    # Custom normals must be set AFTER bmesh pass (bm.to_mesh overwrites)
     if norms is not None and len(norms) > 0:
         me.normals_split_custom_set(norms)
 
@@ -571,12 +577,10 @@ def _compute_edge_attributes(mesh):
     he0 = order[int_starts]
     he1 = order[int_starts + 1]
 
-    # --- Seam: batch IDs differ ---
-    seam_mask = batches[face_of[he0]] != batches[face_of[he1]]
+    # --- Normal discontinuity test (cross-batch edges only) ---
+    cross_batch = batches[face_of[he0]] != batches[face_of[he1]]
     int_edge_keys = unique_keys[interior_idx]
-    seam_keys = int_edge_keys[seam_mask]
 
-    # --- Sharp: normal discontinuity ---
     ev0 = edge_min[he0]
     ev1 = edge_max[he0]
 
@@ -610,76 +614,13 @@ def _compute_edge_attributes(mesh):
 
     sharp_ev0 = _batch_prjtest(plane, norm0_ev0, norm1_ev0)
     sharp_ev1 = _batch_prjtest(plane, norm0_ev1, norm1_ev1)
-    sharp_keys = int_edge_keys[sharp_ev0 & sharp_ev1]
+    # Sharp/seam only between different OCC faces WITH normal discontinuity.
+    # Smooth boundaries (e.g. cylinder halves) get neither sharp nor seam.
+    discontinuous = cross_batch & sharp_ev0 & sharp_ev1
+    sharp_keys = int_edge_keys[discontinuous]
+    seam_keys = sharp_keys  # seams only where normals actually split
 
     return sharp_keys, seam_keys, max_v
-
-
-def _mark_sharp_edges(bm, mesh):
-    """Mark edges as sharp based on normal discontinuity (same logic as TriMesh.add_to_bm).
-
-    Uses per-face-corner normals (loop_norms) which preserve split normals
-    across fused vertices, unlike the per-vertex norms which lose that info.
-    """
-    margin = 0.02
-
-    face_indices = mesh.faces  # (T, 3) vertex indices
-    # Use loop_norms (per-corner) — shape (T*3, 3), indexed as [face_idx*3 + corner]
-    loop_norms = mesh.get_loop_norms()  # (T*3, 3)
-
-    # Build per-face-corner normal lookup: face_corner_norms[fi] = {vert_idx: normal}
-    # Each face has 3 corners; map vertex index -> normal for that corner
-    def _get_face_corner_norms(fi):
-        """Return dict: vert_index -> normal for face fi."""
-        vi = face_indices[fi]
-        base = fi * 3
-        return {int(vi[0]): loop_norms[base],
-                int(vi[1]): loop_norms[base + 1],
-                int(vi[2]): loop_norms[base + 2]}
-
-    def _prj_norm(plane, vec):
-        prj = vec - plane * np.dot(plane, vec)
-        n = np.linalg.norm(prj)
-        if n == 0.0:
-            return np.array([0.0, 0.0, 1.0])
-        return prj / n
-
-    def _prjtest(plane, norms_list, margin):
-        p0 = _prj_norm(plane, norms_list[0])
-        dmax = 1.0
-        for n in norms_list[1:]:
-            prj = _prj_norm(plane, n)
-            dd = np.dot(p0, prj)
-            if dd < dmax:
-                dmax = dd
-        return dmax < 1.0 - margin
-
-    for e in bm.edges:
-        fi = [f.index for f in e.link_faces]
-        if len(fi) != 2:
-            continue
-
-        cn0 = _get_face_corner_norms(fi[0])
-        cn1 = _get_face_corner_norms(fi[1])
-
-        ev0 = e.verts[0].index
-        ev1 = e.verts[1].index
-
-        # Collect normals at each edge vertex from both adjacent faces
-        e_norms = [[], []]
-        if ev0 in cn0: e_norms[0].append(cn0[ev0])
-        if ev0 in cn1: e_norms[0].append(cn1[ev0])
-        if ev1 in cn0: e_norms[1].append(cn0[ev1])
-        if ev1 in cn1: e_norms[1].append(cn1[ev1])
-
-        if not e_norms[0] or not e_norms[1]:
-            continue
-
-        plane = np.array((e.verts[0].co - e.verts[1].co).normalized())
-        if _prjtest(plane, e_norms[0], margin) and _prjtest(plane, e_norms[1], margin):
-            e.smooth = False
-        else:
-            e.smooth = True
 
 
 def _apply_trimesh(obj, mesh, colors, mat_names, norms, uvs,
@@ -928,12 +869,14 @@ def load_step(
         print(f"\n--- Phase 1/3: Pre-computing {n_unique} unique meshes ---")
         precomp_start = time.time()
 
+        last_pct_10 = 0
         for si, (sname, (shp, part_name)) in enumerate(unique_shapes.items()):
             try:
                 if _debug_timing:
                     t_shape = time.time()
                 precomputed[sname] = precompute_mesh_data(
-                    step_reader, shp, lin_deflection, ang_deflection, hacks)
+                    step_reader, shp, lin_deflection, ang_deflection, hacks,
+                    part_name=part_name)
                 if _debug_timing:
                     dt_shape = time.time() - t_shape
                     if dt_shape > 2.0:
@@ -941,6 +884,11 @@ def load_step(
                         print(f"\n  [{pname}: {dt_shape:.1f}s]", end="", flush=True)
             except Exception as e:
                 print(f"\nWarning: precompute failed for {sname} ({part_name}): {e}")
+
+            pct_10 = (100 * (si + 1) // n_unique) // 10 * 10
+            if pct_10 > last_pct_10:
+                print(f"\n  Phase 1: {pct_10}%", end="", flush=True)
+                last_pct_10 = pct_10
 
         print(f"\nPre-compute done in {time.time() - precomp_start:.2f}s")
 
@@ -1167,7 +1115,7 @@ class PG_Stepper(bpy.types.PropertyGroup):
 
     hack_skip_zero_solids: bpy.props.BoolProperty(
         name="Skip faulty solids",
-        description="Skip some shapes the library hangs on and fails to load",
+        description="Skip corrupted/empty parts entirely (no healing or recovery attempts)",
         default=False,
     )
 
