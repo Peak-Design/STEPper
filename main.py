@@ -435,9 +435,18 @@ def _apply_native_mesh(obj, mesh, colors, mat_names, norms,
     # Clear existing geometry (needed for Rebuild Selected)
     me.clear_geometry()
 
-    # Bulk mesh creation via C-level from_pydata
-    me.from_pydata(mesh.verts.tolist(), [], mesh.faces.tolist())
+    # Direct mesh creation via foreach_set (avoids numpy→list conversion)
+    me.vertices.add(n_verts)
+    me.vertices.foreach_set("co", mesh.verts.astype(np.float32).ravel())
+    me.loops.add(n_faces * 3)
+    me.loops.foreach_set("vertex_index", mesh.faces.astype(np.int32).ravel())
+    me.polygons.add(n_faces)
+    loop_starts = np.arange(0, n_faces * 3, 3, dtype=np.int32)
+    me.polygons.foreach_set("loop_start", loop_starts)
+    loop_totals = np.full(n_faces, 3, dtype=np.int32)
+    me.polygons.foreach_set("loop_total", loop_totals)
     me.update()
+    me.validate()
 
     if _debug_timing:
         t1 = time.time()
@@ -459,14 +468,15 @@ def _apply_native_mesh(obj, mesh, colors, mat_names, norms,
         face_colors = mesh.tri_colors        # (n_faces, 3) float32
 
         # Resolve None names to auto-generated names
+        # Pre-compute quantized color hex for unnamed faces using numpy
+        q = np.round(face_colors * _COLOR_MERGE_PRECISION) / _COLOR_MERGE_PRECISION
+        q_bytes = np.clip((q * 255).astype(np.int32), 0, 255)
         resolved_names = []
         for fi in range(n_faces):
             mn = face_mat_names[fi]
             if mn is None:
-                col = tuple(float(x) for x in face_colors[fi])
-                qcol = _quantize_color(col)
-                mn = "STEP_" + "".join(
-                    "{0:0{1}x}".format(int(qcol[i] * 255), 2) for i in range(3))
+                r, g, b = q_bytes[fi]
+                mn = f"STEP_{r:02x}{g:02x}{b:02x}"
             resolved_names.append(mn)
 
         # Get unique material names and assign indices
@@ -504,16 +514,16 @@ def _apply_native_mesh(obj, mesh, colors, mat_names, norms,
         edge_keys = v0.astype(np.int64) * max_v + v1.astype(np.int64)
 
         if len(seam_keys) > 0:
-            seam_arr = np.isin(edge_keys, seam_keys)
-            me.edges.foreach_set('use_seam', seam_arr.tolist())
+            seam_arr = np.isin(edge_keys, seam_keys).astype(bool)
+            me.edges.foreach_set('use_seam', seam_arr)
 
         if len(sharp_keys) > 0:
-            sharp_arr = np.isin(edge_keys, sharp_keys)
+            sharp_arr = np.isin(edge_keys, sharp_keys).astype(bool)
             sharp_attr = me.attributes.get('sharp_edge')
             if sharp_attr is None:
                 sharp_attr = me.attributes.new(
                     name='sharp_edge', type='BOOLEAN', domain='EDGE')
-            sharp_attr.data.foreach_set('value', sharp_arr.tolist())
+            sharp_attr.data.foreach_set('value', sharp_arr)
 
     if norms is not None and len(norms) > 0:
         me.normals_split_custom_set(norms)

@@ -168,19 +168,12 @@ class NativeMeshData:
 
         # Round to avoid floating-point near-misses
         verts_rounded = np.round(self.verts, decimals=6)
-        _, inverse = np.unique(
-            verts_rounded, axis=0, return_inverse=True)
+        _, first_idx, inverse = np.unique(
+            verts_rounded, axis=0, return_index=True, return_inverse=True)
         if len(_) == len(self.verts):
             return  # no duplicates
         # Remap face indices
         self.faces = inverse[self.faces]
-        # Keep first occurrence of each unique vert
-        first_idx = np.zeros(len(_), dtype=np.int64)
-        seen = np.zeros(len(_), dtype=bool)
-        for i, u in enumerate(inverse):
-            if not seen[u]:
-                first_idx[u] = i
-                seen[u] = True
         self.verts = self.verts[first_idx]
         self.uvs = self.uvs[first_idx]
 
@@ -1322,12 +1315,13 @@ class ReadSTEP:
         face_refs = []  # parallel list: (face_obj, trf_obj) for normal re-extraction
 
         test_loc = TopLoc_Location()
+        brep_tool = BRep_Tool()
         for i in sorted(dedup_indices):
             face, trf, col_rgb, col_name, batch_id = collected_faces[i]
             # Verify face has valid, non-empty triangulation before passing to
             # native module.  A face with a corrupt or empty triangulation
             # (e.g. from healing) will crash the C++ OpenMP parallel loop.
-            tri = BRep_Tool().Triangulation(face, test_loc)
+            tri = brep_tool.Triangulation(face, test_loc)
             if tri is None or tri.NbTriangles() == 0 or tri.NbNodes() == 0:
                 with self._lock:
                     self.import_problems["Triangulation"] += 1
@@ -1367,60 +1361,79 @@ class ReadSTEP:
         # to match the proven v2.0.0 path.  The native C++ module and
         # facing.Normal() produce discrete triangulation normals that have
         # floating-point noise at OCC face boundaries, causing visible seams.
-        bt = BRep_Tool()
-        for j in range(len(face_refs)):
-            if failed_mask[j]:
-                continue
+        # Parallelized with threads — OCC SWIG releases the GIL.
+        _gp_res = gp.Resolution()
+
+        def _recompute_face_normals(j):
             face, trf = face_refs[j]
             vs = int(vert_starts[j])
             vc = int(vert_counts[j])
             if vc == 0:
-                continue
-            location = TopLoc_Location()
-            facing = bt.Triangulation(face, location)
-            if facing is None:
-                continue
+                return
             reversed_face = (face.Orientation() == TopAbs_REVERSED)
+
+            # Extract 3x3 rotation from inverse transform once per face
             itform = trf.Inverted()
-            n_nodes = facing.NbNodes()
+            rot = np.array([
+                [itform.Value(1, 1), itform.Value(1, 2), itform.Value(1, 3)],
+                [itform.Value(2, 1), itform.Value(2, 2), itform.Value(2, 3)],
+                [itform.Value(3, 1), itform.Value(3, 2), itform.Value(3, 3)],
+            ], dtype=np.float32)
 
-            # Surface-based normal computation
             surface = BRepAdaptor_Surface(face)
-            prop = BRepLProp_SLProps(surface, 2, gp.Resolution())
-            has_uvs = facing.HasUVNodes()
+            prop = BRepLProp_SLProps(surface, 2, _gp_res)
 
-            # UV bounds for edge-avoidance shrink
-            Umin = Umax = Vmin = Vmax = 0.0
-            if has_uvs:
-                for t in range(1, n_nodes + 1):
-                    uv = facing.UVNode(t)
-                    u, v = uv.X(), uv.Y()
-                    if t == 1:
-                        Umin, Umax, Vmin, Vmax = u, u, v, v
+            # Use UVs already extracted by native module (skip SWIG calls)
+            face_uvs = all_uvs[vs:vs + vc]
+            u_vals = face_uvs[:, 0]
+            v_vals = face_uvs[:, 1]
+            Ucenter = (float(u_vals.min()) + float(u_vals.max())) * 0.5
+            Vcenter = (float(v_vals.min()) + float(v_vals.max())) * 0.5
+
+            # Pre-compute shrunk UVs in numpy (avoids per-vertex Python math)
+            u_shrunk = (u_vals - Ucenter) * 0.999 + Ucenter
+            v_shrunk = (v_vals - Vcenter) * 0.999 + Vcenter
+
+            # Check once at face center whether normals are defined
+            prop.SetParameters(float(Ucenter), float(Vcenter))
+            face_has_normals = prop.IsNormalDefined()
+
+            norms_local = np.empty((vc, 3), dtype=np.float32)
+            if face_has_normals:
+                # Fast path: skip per-vertex IsNormalDefined check
+                for i in range(vc):
+                    prop.SetParameters(float(u_shrunk[i]), float(v_shrunk[i]))
+                    nd = prop.Normal()
+                    norms_local[i] = (nd.X(), nd.Y(), nd.Z())
+            else:
+                # Rare path: check each vertex individually
+                for i in range(vc):
+                    prop.SetParameters(float(u_shrunk[i]), float(v_shrunk[i]))
+                    if prop.IsNormalDefined():
+                        nd = prop.Normal()
+                        norms_local[i] = (nd.X(), nd.Y(), nd.Z())
                     else:
-                        if u < Umin: Umin = u
-                        if u > Umax: Umax = u
-                        if v < Vmin: Vmin = v
-                        if v > Vmax: Vmax = v
-            Ucenter = (Umin + Umax) * 0.5
-            Vcenter = (Vmin + Vmax) * 0.5
+                        norms_local[i] = (0.0, 0.0, 1.0)
 
-            for t in range(1, n_nodes + 1):
-                if has_uvs:
-                    uv = facing.UVNode(t)
-                    u, v = uv.X(), uv.Y()
-                else:
-                    u, v = 0.0, 0.0
-                prop.SetParameters((u - Ucenter) * 0.999 + Ucenter,
-                                   (v - Vcenter) * 0.999 + Vcenter)
-                if prop.IsNormalDefined():
-                    normal = prop.Normal().Transformed(itform)
-                    nn = np.array(b_XYZ(normal), dtype=np.float32)
-                    if reversed_face:
-                        nn = -nn
-                else:
-                    nn = np.array((0.0, 0.0, 1.0), dtype=np.float32)
-                all_norms[vs + t - 1] = nn
+            # Bulk transform + flip with numpy (replaces per-vertex SWIG calls)
+            norms_out = norms_local @ rot.T
+            if reversed_face:
+                norms_out = -norms_out
+            all_norms[vs:vs + vc] = norms_out
+
+        valid_indices = [j for j in range(len(face_refs))
+                         if not failed_mask[j]]
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        n_workers = min(len(valid_indices), os.cpu_count() or 4)
+        if n_workers > 1 and len(valid_indices) > 1:
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = [pool.submit(_recompute_face_normals, j)
+                           for j in valid_indices]
+                for f in as_completed(futures):
+                    f.result()  # propagate exceptions
+        else:
+            for j in valid_indices:
+                _recompute_face_normals(j)
 
         # Build combined flat arrays: accumulate all faces with global indices
         # Each OCC face has its own local vertex set; we concatenate them all.
@@ -1451,8 +1464,7 @@ class ReadSTEP:
             if col_rgb is not None:
                 tri_colors[fs:fs + fc] = col_rgb
                 mat_name = col_name if col_name else None
-                for t in range(fs, fs + fc):
-                    tri_mat_names[t] = mat_name
+                tri_mat_names[fs:fs + fc] = [mat_name] * fc
 
         return NativeMeshData(
             verts=all_verts,
