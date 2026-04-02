@@ -13,12 +13,18 @@
 #
 # Created Date: Thursday, April 15th 2021, 4:38:48 pm
 # Copyright: Tommi Hyppänen
+#
+# Modified 2026 by Peak-Design:
+#   - Ported to Blender 5.0 API
+#   - Added failed parts tracking and popup warnings
+#   - Import summary improvements
 
 import dataclasses
 import ntpath
 import os
 import time
 import sys
+from collections import OrderedDict
 
 import numpy as np
 import bmesh  # type: ignore
@@ -29,16 +35,36 @@ from mathutils import Vector  # type: ignore
 
 from .trimesh import TriMesh
 
-# import sys
-# import math
-
-# from collections import defaultdict
-
-# from .sizeof import total_size
-# utils.memorytrace_start()
-
-global_file_cache = {}
+# LRU file cache with max entry limit
+MAX_FILE_CACHE = 10
+global_file_cache = OrderedDict()
 must_have_python = (3, 11)
+
+# Color quantization precision for material merging (~1.5% tolerance)
+_COLOR_MERGE_PRECISION = 64
+
+
+def _quantize_color(col):
+    """Round color components to merge near-identical materials."""
+    return tuple(round(c * _COLOR_MERGE_PRECISION) / _COLOR_MERGE_PRECISION for c in col)
+
+
+def _cache_put(filepath, step_reader):
+    """Add to file cache with LRU eviction."""
+    if filepath in global_file_cache:
+        global_file_cache.move_to_end(filepath)
+    global_file_cache[filepath] = step_reader
+    while len(global_file_cache) > MAX_FILE_CACHE:
+        evicted_path, _ = global_file_cache.popitem(last=False)
+        print(f"Cache evicted: {os.path.basename(evicted_path)}")
+
+
+def _cache_get(filepath):
+    """Get from file cache, updating LRU order. Returns None if not found."""
+    if filepath in global_file_cache:
+        global_file_cache.move_to_end(filepath)
+        return global_file_cache[filepath]
+    return None
 
 
 def scalemat(mat, sl):
@@ -130,6 +156,8 @@ def bpy_update_object_data(objdata, bm, vcol_name, colors, uvs, norms, mat_names
             if build_materials:
                 # Translate color into name, if not defined
                 if mat_col_name is None:
+                    # Quantize color to merge near-identical materials
+                    mat_col = _quantize_color(mat_col)
                     mat_col_name = "STEP_" + "".join("{0:0{1}x}".format(int(mat_col[i] * 255), 2) for i in range(3))
 
                 # If material doesn't exist, create it
@@ -309,14 +337,16 @@ def build_mesh(step_reader, obj, shp, lind, angd, vcol_name="Colors"):
     bm = bmesh.new()
     mesh.add_to_bm(bm, edges_as_seams=True, discontinuity_as_sharp=True)
     mesh.fill_empty_color()
+    # Single-pass loop data extraction instead of 4 separate iterations
+    colors, mat_names, norms, uvs = mesh.get_all_loop_data()
     bpy_update_object_data(
         obj.data,
         bm,
         vcol_name,
-        mesh.get_loop_colors(),
-        mesh.get_loop_uvs(),
-        mesh.get_loop_normals(),
-        mesh.get_loop_material_names(),
+        colors,
+        uvs,
+        norms,
+        mat_names,
         build_materials=bpy.context.scene.stepper.build_materials,
     )
 
@@ -414,6 +444,23 @@ def build_nurbs(step_reader, shp, name):
         return bpy.context.view_layer.objects.active
 
 
+def _show_failed_parts_popup(failed_parts):
+    """Show a Blender popup dialog listing parts that failed to import."""
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text=f"{len(failed_parts)} part(s) produced no geometry:")
+        col = layout.column(align=True)
+        for name in failed_parts[:30]:
+            col.label(text=f"    {name}", icon="ERROR")
+        if len(failed_parts) > 30:
+            col.label(text=f"    ... and {len(failed_parts) - 30} more")
+        layout.separator()
+        layout.label(text="Usually caused by unresolved references in the STEP file.")
+
+    bpy.context.window_manager.popup_menu(draw, title="STEPper Import Warning", icon="ERROR")
+
+
 def load_step(
     context,
     filepath,
@@ -430,16 +477,16 @@ def load_step(
 
     filename = "".join(ntpath.basename(filepath).split(".")[:-1])
 
-    if filepath not in global_file_cache:
+    cached = _cache_get(filepath)
+    if cached is None:
         try:
             step_reader = importer.ReadSTEP(filepath)
-            global_file_cache[filepath] = step_reader
+            _cache_put(filepath, step_reader)
         except AssertionError as e:
             print(e)
             return False
-
     else:
-        step_reader = global_file_cache[filepath]
+        step_reader = cached
         print("Loaded file from cache")
 
     tree = step_reader.tree
@@ -462,6 +509,15 @@ def load_step(
     all_shapes = tree.get_shapes()
     total = len(all_shapes)
 
+    # Phase 1: Pre-tessellate all unique shapes in parallel
+    n_unique_shapes = len(step_reader.sub_shapes)
+    if n_unique_shapes > 0 and not step_reader._pre_tessellated:
+        print(f"\n--- Phase 1/3: Pre-tessellating {n_unique_shapes} unique shapes ---")
+        tess_start = time.time()
+        step_reader.pre_tessellate_all(lin_deflection, ang_deflection)
+        print(f"\nTessellation done in {time.time() - tess_start:.2f}s")
+
+    print(f"\n--- Phase 2/3: Building {total} Blender objects ---")
     wm.progress_begin(0, total)
     for i, (shp, node_index) in enumerate(all_shapes):
         parent_uuid, self_uuid, tag, name, _, local_t, global_t = tree.nodes[node_index].get_values()
@@ -492,6 +548,10 @@ def load_step(
                 obj = create_new_obj_with_mesh(name)
                 bpy.ops.object.mode_set(mode="OBJECT")
                 build_mesh(step_reader, obj, shp, lin_deflection, ang_deflection)
+
+                # Track parts that produced no geometry
+                if obj.data is not None and len(obj.data.vertices) == 0:
+                    step_reader.failed_parts.append(name)
 
                 # TODO: nurbs changes here
                 # obj = build_nurbs(step_reader, shp, name)
@@ -561,26 +621,30 @@ def load_step(
         hierarchy_collections = {}
         hierarchy_collections[-1] = tree_collection
 
-        def node_parse(node, level, parent_collection):
-            # if "name" in node and node["children"] is not None:
-            if len(node.children) > 0:
-                collection_node = bpy.data.collections.new(node.name)
-                assert node.index not in hierarchy_collections
-                hierarchy_collections[node.index] = collection_node
-
-                parent_collection.children.link(collection_node)
-                for c in node.children:
-                    node_parse(tree.nodes[c], level + 1, collection_node)
-
         root = tree.nodes[0]
+        # Map root node to tree collection so objects with STEP_parent=0 resolve
+        hierarchy_collections[root.index] = tree_collection
+
         if len(root.children) > 0:
-            for c in root.children:
-                node_parse(tree.nodes[c], 0, tree_collection)
+            # Iterative tree traversal (avoids recursion limit on deep assemblies)
+            stack = list(reversed([(c, 0, tree_collection) for c in root.children]))
+            while stack:
+                node_idx, level, parent_collection = stack.pop()
+                node = tree.nodes[node_idx]
+                if len(node.children) > 0:
+                    collection_node = bpy.data.collections.new(node.name)
+                    assert node.index not in hierarchy_collections
+                    hierarchy_collections[node.index] = collection_node
+                    parent_collection.children.link(collection_node)
+                    for c in reversed(node.children):
+                        stack.append((c, level + 1, collection_node))
 
             # link objects to tree
             if len(hierarchy_collections.items()) > 0:
                 for obj in created_objs:
-                    hierarchy_collections[obj["STEP_parent"]].objects.link(obj)
+                    parent_key = obj["STEP_parent"]
+                    parent_col = hierarchy_collections.get(parent_key, tree_collection)
+                    parent_col.objects.link(obj)
                     global_t = tree.nodes[obj["STEP_tree_location"]].global_transform
                     set_obj_matrix_world(obj, global_t)
 
@@ -598,12 +662,42 @@ def load_step(
                 obj.parent = parent
                 obj.matrix_parent_inverse = parent.matrix_world.inverted()
 
+    print(f"\n--- Phase 3/3: Applying transforms ---")
     transform_to_up(up_as[0], created_objs, scale)
 
     wm.progress_end()
-    print(f"STEP loading time elapsed: {time.time()-start_time:.2f}")
+    elapsed = time.time() - start_time
 
-    return True
+    # Import summary report
+    n_objects = len(created_objs)
+    n_unique = len(created_names)
+    n_linked = n_objects - n_unique
+    print(f"\n{'='*50}")
+    print(f"  STEPper Import Summary")
+    print(f"{'='*50}")
+    print(f"  File:    {filename}")
+    print(f"  Objects: {n_objects} ({n_unique} unique, {n_linked} linked copies)")
+    print(f"  Scale:   {scale:.6f} m/unit")
+    print(f"  Time:    {elapsed:.2f}s")
+    has_problems = False
+    for k, v in step_reader.import_problems.items():
+        if v > 0:
+            print(f"  Warning - {k}: {v}")
+            has_problems = True
+    if step_reader.skipped_shapes:
+        print(f"  Skipped: {len(step_reader.skipped_shapes)} shapes")
+        has_problems = True
+    if step_reader.failed_parts:
+        print(f"  Failed parts ({len(step_reader.failed_parts)}):")
+        for fp_name in step_reader.failed_parts:
+            print(f"    - {fp_name}")
+        has_problems = True
+    if not has_problems:
+        print(f"  No warnings")
+    print(f"{'='*50}")
+
+    # Return list of failed part names (empty list = full success)
+    return step_reader.failed_parts
 
 
 class PG_Stepper(bpy.types.PropertyGroup):
@@ -799,6 +893,7 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
             import_files = [self.override_file]
 
         # iterate through the selected files
+        all_failed_parts = []
         for j, i in enumerate(import_files):
             # generate full path to file
             path_to_file = os.path.join(folder, i)
@@ -812,11 +907,24 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
                 up_as=self.up_as,
                 htypes=self.hierarchy_types,
             )
-        if result:
-            return {"FINISHED"}
-        else:
-            self.report({"ERROR"}, "STEP file could not be opened. Possibly damaged file.")
-            return {"CANCELLED"}
+            if result is False:
+                self.report({"ERROR"}, "STEP file could not be opened. Possibly damaged file.")
+                return {"CANCELLED"}
+            if result:
+                all_failed_parts.extend(result)
+
+        if all_failed_parts:
+            # Show warning popup listing parts that failed to import
+            msg = f"{len(all_failed_parts)} part(s) imported with no geometry:\n"
+            for fp_name in all_failed_parts[:20]:
+                msg += f"  - {fp_name}\n"
+            if len(all_failed_parts) > 20:
+                msg += f"  ... and {len(all_failed_parts) - 20} more\n"
+            msg += "This is usually caused by unresolved references in the STEP file."
+            self.report({"WARNING"}, msg)
+            _show_failed_parts_popup(all_failed_parts)
+
+        return {"FINISHED"}
 
 
 class STEP_OT_ClearCache(bpy.types.Operator):
@@ -923,7 +1031,26 @@ class STEP_OT_ReloadSTEP(bpy.types.Operator):
 
         filepath = context.object["STEP_file"]
         step_reader = importer.ReadSTEP(filepath)
-        global_file_cache[filepath] = step_reader
+        _cache_put(filepath, step_reader)
+        return {"FINISHED"}
+
+
+class STEP_OT_ClearFileCache(bpy.types.Operator):
+    bl_idname = "object.occ_clear_file_cache"
+    bl_label = "Clear this file from cache"
+    bl_description = "Remove the selected object's STEP file from cache (next import re-reads from disk)"
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None and "STEP_file" in context.object
+
+    def execute(self, context):
+        filepath = context.object["STEP_file"]
+        if filepath in global_file_cache:
+            del global_file_cache[filepath]
+            self.report({"INFO"}, f"Cleared cache for: {os.path.basename(filepath)}")
+        else:
+            self.report({"WARNING"}, "File not in cache")
         return {"FINISHED"}
 
 
@@ -972,9 +1099,9 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
                 continue
 
             if prevname != curname:
-                if curname in global_file_cache:
-                    step_reader = global_file_cache[curname]
-                    # shapes_labels = step_reader.output_shapes
+                cached_reader = _cache_get(curname)
+                if cached_reader is not None:
+                    step_reader = cached_reader
                     tree = step_reader.tree
                 else:
                     self.report(
@@ -1054,6 +1181,12 @@ class STEP_PT_STEPper_Reload(bpy.types.Panel):
         layout = self.layout
         row = layout.row()
         row.operator(STEP_OT_ReloadSTEP.bl_idname, text="Reload STEP file")
+        row = layout.row()
+        row.operator(STEP_OT_ClearFileCache.bl_idname, text="Clear this file from cache")
+        row = layout.row()
+        row.operator(STEP_OT_ClearCache.bl_idname, text="Clear all cache")
+        row = layout.row()
+        row.label(text=f"Cached files: {len(global_file_cache)}/{MAX_FILE_CACHE}")
 
 
 class STEP_PT_STEPper_Debug(bpy.types.Panel):
@@ -1157,6 +1290,7 @@ classes = (
     PG_Stepper,
     ImportStepCADOperator,
     STEP_OT_ClearCache,
+    STEP_OT_ClearFileCache,
     STEP_OT_RebuildSelected,
     STEP_OT_ReloadSTEP,
     STEP_OT_FixASCII,

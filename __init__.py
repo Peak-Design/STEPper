@@ -12,13 +12,19 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 # Copyright 2021 Tommi Hyppänen
+#
+# Modified 2026 by Peak-Design:
+#   - Ported to Blender 5.0 API
+#   - Updated to pythonocc-core 7.9.0 (OpenCASCADE 7.9.0)
+#   - Fixed tessellation race conditions and corrupt STEP handling
+#   - Added failed parts popup and import diagnostics
 
 bl_info = {
     "name": "STEPper",
-    "author": "ambi",
+    "author": "ambi, Peak-Design",
     "description": "STEP OpenCASCADE import",
-    "blender": (4, 2, 0),
-    "version": (1, 1, 8),
+    "blender": (5, 0, 0),
+    "version": (2, 0, 0),
     "location": "3D View > Tools panel > Stepper",
     "category": "Import",
 }

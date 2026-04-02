@@ -23,13 +23,22 @@ import sys
 from typing import Any, Callable, List, Optional, Tuple
 
 from OCC import VERSION
-from OCC.Display.backend import load_backend, get_qt_modules
-from OCC.Display.OCCViewer import OffscreenRenderer
+from OCC.Display.backend import get_qt_modules, load_backend
+from OCC.Display.OCCViewer import OffscreenRenderer, Viewer3d
 
 log = logging.getLogger(__name__)
 
 
 def check_callable(_callable: Callable) -> None:
+    """
+    Checks if the given object is callable.
+
+    Args:
+        _callable: The object to check.
+
+    Raises:
+        AssertionError: If the object is not callable.
+    """
     if not callable(_callable):
         raise AssertionError("The function supplied is not callable")
 
@@ -40,21 +49,31 @@ def init_display(
     display_triedron: Optional[bool] = True,
     background_gradient_color1: Optional[List[int]] = [206, 215, 222],
     background_gradient_color2: Optional[List[int]] = [128, 128, 128],
-):
-    """This function loads and initialize a GUI using either wx, pyqt5, pyqt6, pyside2 or pyside6.
-    If ever the environment variable PYTHONOCC_OFFSCREEN_RENDERER, then the GUI is simply
-    ignored and an offscreen renderer is returned.
-    init_display returns 4 objects :
-    * display : an instance of Viewer3d ;
-    * start_display : a function (the GUI mainloop) ;
-    * add_menu : a function that creates a menu in the GUI
-    * add_function_to_menu : adds a menu option
+) -> Tuple[Viewer3d, Callable, Callable, Callable]:
+    """
+    Initializes a GUI for the 3D viewer.
 
-    In case an offscreen renderer is returned, start_display and add_menu are ignored, i.e.
-    an empty function is returned (named do_nothing). add_function_to_menu just execute the
-    function taken as a parameter.
+    This function loads and initializes a GUI using either wx, pyqt5, pyqt6,
+    pyside2 or pyside6. If the environment variable
+    PYTHONOCC_OFFSCREEN_RENDERER is set to "1", the GUI is ignored and an
+    offscreen renderer is returned instead.
 
-    Note : the offscreen renderer is used on the travis side.
+    Args:
+        backend_str (str, optional): The backend to use. If not specified,
+            it will be automatically detected.
+        size (tuple, optional): The size of the window.
+        display_triedron (bool, optional): Whether to display the triedron.
+        background_gradient_color1 (list, optional): The first color of the
+            background gradient.
+        background_gradient_color2 (list, optional): The second color of the
+            background gradient.
+
+    Returns:
+        A tuple containing:
+        - display: An instance of Viewer3d.
+        - start_display: A function to start the GUI main loop.
+        - add_menu: A function to add a menu to the GUI.
+        - add_function_to_menu: A function to add a function to a menu.
     """
     if size is None:  # prevent size to being None (mypy)
         raise AssertionError("window size cannot be None")
@@ -63,11 +82,11 @@ def init_display(
         # create the offscreen renderer
         offscreen_renderer = OffscreenRenderer()
 
-        def do_nothing(*kargs: Any, **kwargs: Any) -> None:
+        def do_nothing(*args: Any, **kwargs: Any) -> None:
             """takes as many parameters as you want, and does nothing"""
             return None
 
-        def call_function(s, func: Callable) -> None:
+        def call_function(s: str, func: Callable) -> None:
             """A function that calls another function.
             Helpful to bypass add_function_to_menu. s should be a string
             """
@@ -86,6 +105,7 @@ def init_display(
     # tkinter SimpleGui
     if used_backend == "tk":
         import tkinter as tk
+
         from OCC.Display.tkDisplay import tkViewer3d
 
         root = tk.Tk()
@@ -121,7 +141,7 @@ def init_display(
         print("wxPython backend - ", wx.version())
 
         class AppFrame(wx.Frame):
-            def __init__(self, parent):
+            def __init__(self, parent: Any) -> None:
                 wx.Frame.__init__(
                     self,
                     parent,
@@ -145,12 +165,11 @@ def init_display(
                 # point on curve
                 _id = wx.NewId()
                 check_callable(_callable)
-                try:
-                    self._menus[menu_name].Append(
-                        _id, _callable.__name__.replace("_", " ").lower()
-                    )
-                except KeyError:
+                if menu_name not in self._menus:
                     raise ValueError(f"the menu item {menu_name} does not exist")
+                self._menus[menu_name].Append(
+                    _id, _callable.__name__.replace("_", " ").lower()
+                )
                 self.Bind(wx.EVT_MENU, _callable, id=_id)
 
         app = wx.App(False)
@@ -161,10 +180,10 @@ def init_display(
         app.SetTopWindow(win)
         display = win.canva._display
 
-        def add_menu(*args, **kwargs) -> None:
+        def add_menu(*args: Any, **kwargs: Any) -> None:
             win.add_menu(*args, **kwargs)
 
-        def add_function_to_menu(*args, **kwargs) -> None:
+        def add_function_to_menu(*args: Any, **kwargs: Any) -> None:
             win.add_function_to_menu(*args, **kwargs)
 
         def start_display() -> None:
@@ -216,20 +235,19 @@ def init_display(
 
             def add_function_to_menu(self, menu_name: str, _callable: Callable) -> None:
                 check_callable(_callable)
-                try:
-                    _action = QtWidgets.QAction(
-                        _callable.__name__.replace("_", " ").lower(), self
-                    )
-                    # if not, the "exit" action is now shown...
-                    _action.setMenuRole(QtWidgets.QAction.NoRole)
-                    _action.triggered.connect(_callable)
-
-                    self._menus[menu_name].addAction(_action)
-                except KeyError:
+                if menu_name not in self._menus:
                     raise ValueError(f"the menu item {menu_name} does not exist")
+                qaction = (
+                    QtGui.QAction
+                    if used_backend in ["pyqt6", "pyside6"]
+                    else QtWidgets.QAction
+                )
+                _action = qaction(_callable.__name__.replace("_", " ").lower(), self)
+                _action.triggered.connect(_callable)
+                self._menus[menu_name].addAction(_action)
 
         # following couple of lines is a tweak to enable ipython --gui='qt'
-        app = QtWidgets.QApplication(sys.argv)
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
         win = MainWindow()
         win.resize(size[0] - 1, size[1] - 1)
         win.show()
@@ -240,15 +258,16 @@ def init_display(
         win.canva.qApp = app
         display = win.canva._display
 
-        def add_menu(*args, **kwargs) -> None:
+        def add_menu(*args: Any, **kwargs: Any) -> None:
             win.add_menu(*args, **kwargs)
 
-        def add_function_to_menu(*args, **kwargs) -> None:
+        def add_function_to_menu(*args: Any, **kwargs: Any) -> None:
             win.add_function_to_menu(*args, **kwargs)
 
         def start_display() -> None:
             win.raise_()  # make the application float to the top
-            app.exec_()
+            main_loop = app.exec if used_backend in ["pyqt6", "pyside6"] else app.exec_
+            main_loop()
 
     if display_triedron:
         display.display_triedron()

@@ -18,6 +18,7 @@
 import logging
 import os
 import sys
+from typing import Any, Optional, Tuple
 
 # backend constants
 WX = "wx"
@@ -44,16 +45,25 @@ log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
 
 
-def qt6_force_xcb_on_linux():
-    """Force QT_QPA_PLATFORM to 'xcb' on Linux for Qt6. wayland implementation
-    prevents winId to provide with the correct x11 windows id"""
+def qt6_force_xcb_on_linux() -> None:
+    """
+    Force QT_QPA_PLATFORM to 'xcb' on Linux for Qt6.
+
+    Wayland implementation prevents winId to provide with the correct x11
+    windows id.
+    """
     if sys.platform == "linux" and "XDG_SESSION_TYPE" in os.environ:
         if os.environ["XDG_SESSION_TYPE"] == "wayland":
             os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 
-def load_pyqt5():
-    """Return True is PyQt5 found, else False"""
+def load_pyqt5() -> bool:
+    """
+    Loads the PyQt5 backend.
+
+    Returns:
+        bool: True if PyQt5 is found, False otherwise.
+    """
     global HAVE_PYQT5, QtCore, QtGui, QtWidgets, QtOpenGL
 
     # backend already loaded, dont load another one
@@ -68,8 +78,13 @@ def load_pyqt5():
     return HAVE_PYQT5
 
 
-def load_pyside2():
-    """Return True is PySide2 found, else False"""
+def load_pyside2() -> bool:
+    """
+    Loads the PySide2 backend.
+
+    Returns:
+        bool: True if PySide2 is found, False otherwise.
+    """
     global HAVE_PYSIDE2, QtCore, QtGui, QtWidgets, QtOpenGL
 
     # backend already loaded, dont load another one
@@ -84,8 +99,13 @@ def load_pyside2():
     return HAVE_PYSIDE2
 
 
-def load_pyqt6():
-    """Return True is PyQt5 found, else False"""
+def load_pyqt6() -> bool:
+    """
+    Loads the PyQt6 backend.
+
+    Returns:
+        bool: True if PyQt6 is found, False otherwise.
+    """
     global HAVE_PYQT6, QtCore, QtGui, QtWidgets, QtOpenGL
 
     # backend already loaded, dont load another one
@@ -101,8 +121,13 @@ def load_pyqt6():
     return HAVE_PYQT6
 
 
-def load_pyside6():
-    """Return True is PyQt5 found, else False"""
+def load_pyside6() -> bool:
+    """
+    Loads the PySide6 backend.
+
+    Returns:
+        bool: True if PySide6 is found, False otherwise.
+    """
     global HAVE_PYSIDE6, QtCore, QtGui, QtWidgets, QtOpenGL
 
     # backend already loaded, dont load another one
@@ -118,8 +143,13 @@ def load_pyside6():
     return HAVE_PYSIDE6
 
 
-def load_wx():
-    """Return True is wxPython found, else False"""
+def load_wx() -> bool:
+    """
+    Loads the wxPython backend.
+
+    Returns:
+        bool: True if wxPython is found, False otherwise.
+    """
 
     # backend already loaded, dont load another one
     if loaded_backend():
@@ -134,17 +164,31 @@ def load_wx():
     return HAVE_WX
 
 
-def loaded_backend():
+def loaded_backend() -> bool:
+    """
+    Returns True if a backend is loaded, False otherwise.
+    """
     return HAVE_BACKEND
 
 
-def get_loaded_backend():
+def get_loaded_backend() -> str:
+    """
+    Returns the name of the loaded backend.
+    """
     return BACKEND_MODULE
 
 
-def load_any_qt_backend():
-    """Load any qt based backend. First try to load
-    PyQt5, then PyQt6. Raise an exception if none of them are available
+def load_any_qt_backend() -> bool:
+    """
+    Loads any Qt-based backend.
+
+    It first tries to load PyQt5, then PyQt6.
+
+    Returns:
+        bool: True if a Qt backend was loaded, False otherwise.
+
+    Raises:
+        AssertionError: If no Qt backend can be loaded.
     """
     pyqt5_loaded = False
     # by default, load PyQt5
@@ -156,7 +200,7 @@ def load_any_qt_backend():
     return True
 
 
-def load_backend(backend_str=None):
+def load_backend(backend_str: Optional[str] = None) -> str:
     """Load a GUI backend
 
     If no Qt backend is found (PyQt5 or PySide), wx is loaded
@@ -275,7 +319,7 @@ def load_backend(backend_str=None):
     return "tk"
 
 
-def get_qt_modules():
+def get_qt_modules() -> Tuple[Any, Any, Any, Any]:
     """
 
     Returns

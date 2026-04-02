@@ -3,8 +3,6 @@ from typing import overload, NewType, Optional, Tuple
 
 from OCC.Core.Standard import *
 from OCC.Core.NCollection import *
-from OCC.Core.gp import *
-
 
 class IntImp_ConstIsoparametric(IntEnum):
     IntImp_UIsoparametricOnCaro1: int = ...
@@ -20,4 +18,3 @@ IntImp_VIsoparametricOnCaro2 = IntImp_ConstIsoparametric.IntImp_VIsoparametricOn
 # harray1 classes
 # harray2 classes
 # hsequence classes
-

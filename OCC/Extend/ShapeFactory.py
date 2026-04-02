@@ -16,6 +16,7 @@
 ##along with pythonOCC.  If not, see <http://www.gnu.org/licenses/>.
 
 from math import radians
+from typing import Any, List, Tuple, Union
 
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
@@ -26,11 +27,12 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakeEdge2d,
     BRepBuilderAPI_Transform,
+    BRepBuilderAPI_GTransform,
 )
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_GTransform
 from OCC.Core.BRepFill import BRepFill_Filling
 from OCC.Core.Bnd import Bnd_Box, Bnd_OBB
 from OCC.Core.GeomAbs import (
+    GeomAbs_Shape,
     GeomAbs_C0,
     GeomAbs_Plane,
     GeomAbs_Cylinder,
@@ -45,16 +47,24 @@ from OCC.Core.GeomAbs import (
     GeomAbs_OtherSurface,
 )
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface, BRepAdaptor_Curve
+from OCC.Core.Geom import Geom_BSplineCurve, Geom_BezierCurve, Geom_Surface
 from OCC.Core.GeomAPI import GeomAPI_PointsToBSpline
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.TColgp import TColgp_Array1OfPnt
-from OCC.Core.TopoDS import TopoDS_Face
+from OCC.Core.TopoDS import (
+    TopoDS_Face,
+    TopoDS_Shape,
+    TopoDS_Vertex,
+    TopoDS_Edge,
+    TopoDS_Wire,
+)
 from OCC.Core.gp import (
     gp,
     gp_Vec,
     gp_Pnt,
     gp_Trsf,
+    gp_Ax1,
     gp_Ax2,
     gp_Dir,
     gp_GTrsf,
@@ -69,17 +79,25 @@ from OCC.Extend.TopologyUtils import is_edge, is_face
 #
 # assert utils
 #
-def assert_shape_not_null(shp):
+def assert_shape_not_null(shp: TopoDS_Shape) -> None:
+    """Checks if a shape is not None."""
     if shp is None:
         raise AssertionError("Shape is Null.")
 
 
-def assert_isdone(inst, message):
+def assert_isdone(inst: Any, message: str) -> None:
+    """Checks if a BRepBuilderAPI algorithm has completed successfully."""
     if not inst.IsDone():
         raise AssertionError(message)
 
 
-def point_list_to_TColgp_Array1OfPnt(li):
+def point_list_to_TColgp_Array1OfPnt(li: List[gp_Pnt]) -> TColgp_Array1OfPnt:
+    """
+    Converts a list of gp_Pnt to a TColgp_Array1OfPnt.
+
+    :param li: A list of gp_Pnt.
+    :return: A TColgp_Array1OfPnt containing the points.
+    """
     pts = TColgp_Array1OfPnt(0, len(li) - 1)
     for n, i in enumerate(li):
         pts.SetValue(n, i)
@@ -88,28 +106,61 @@ def point_list_to_TColgp_Array1OfPnt(li):
 
 #
 # 0D
-def make_vertex(*args):
+def make_vertex(*args: Union[gp_Pnt, float]) -> TopoDS_Vertex:
+    """
+    Creates a TopoDS_Vertex from a point.
+
+    :param args: A gp_Pnt or the coordinates (x, y, z) of the point.
+    :return: The created TopoDS_Vertex.
+    """
     vert = BRepBuilderAPI_MakeVertex(*args)
-    assert_isdone(vert, "failed to produce edge")
+    assert_isdone(vert, "failed to produce vertex")
     return vert.Vertex()
 
 
 #
 # 1D
 #
-def make_edge(*args):
+def make_edge(*args: Any) -> TopoDS_Edge:
+    """
+    Creates a TopoDS_Edge from various inputs.
+
+    Can create an edge from:
+    - Two gp_Pnt
+    - A TopoDS_Vertex and a gp_Pnt
+    - Two TopoDS_Vertex
+    - A Geom_Curve
+
+    :param args: The input geometry to create the edge from.
+    :return: The created TopoDS_Edge.
+    """
     edge = BRepBuilderAPI_MakeEdge(*args)
     assert_isdone(edge, "failed to produce edge")
     return edge.Edge()
 
 
-def make_edge2d(*args):
+def make_edge2d(*args: Any) -> TopoDS_Edge:
+    """
+    Creates a 2D TopoDS_Edge.
+
+    :param args: Arguments for BRepBuilderAPI_MakeEdge2d.
+    :return: The created 2D TopoDS_Edge.
+    """
     edge = BRepBuilderAPI_MakeEdge2d(*args)
     assert_isdone(edge, "failed to produce edge")
     return edge.Edge()
 
 
-def make_wire(*args):
+def make_wire(*args: Union[List[TopoDS_Edge], TopoDS_Edge]) -> TopoDS_Wire:
+    """
+    Creates a TopoDS_Wire from a list of edges or by connecting edges.
+
+    If the first argument is a list or tuple of edges, it creates a wire from them.
+    Otherwise, it can take multiple TopoDS_Edge arguments and connect them.
+
+    :param args: A list of edges or a sequence of edges.
+    :return: The created TopoDS_Wire.
+    """
     # if we get an iterable, than add all edges to wire builder
     if isinstance(args[0], (list, tuple)):
         wire = BRepBuilderAPI_MakeWire()
@@ -122,7 +173,13 @@ def make_wire(*args):
     return wire.Wire()
 
 
-def points_to_bspline(pnts):
+def points_to_bspline(pnts: List[gp_Pnt]) -> Geom_BSplineCurve:
+    """
+    Creates a BSpline curve from a list of points.
+
+    :param pnts: A list of gp_Pnt.
+    :return: A Geom_BSplineCurve.
+    """
     pts = TColgp_Array1OfPnt(0, len(pnts) - 1)
     for n, i in enumerate(pnts):
         pts.SetValue(n, i)
@@ -130,12 +187,17 @@ def points_to_bspline(pnts):
     return crv.Curve()
 
 
-def edge_to_bezier(topods_edge):
-    """take an edge and returns:
-    * a bool is_bezier
-    * the bezier curve
-    * degrees
-    * poles
+def edge_to_bezier(
+    topods_edge: TopoDS_Edge,
+) -> Tuple[bool, Geom_BezierCurve, int]:
+    """
+    Converts a TopoDS_Edge to a Bezier curve if possible.
+
+    :param topods_edge: The edge to convert.
+    :return: A tuple containing:
+        - A boolean indicating if the conversion was successful.
+        - The Geom_BezierCurve if successful, otherwise None.
+        - The degree of the Bezier curve if successful, otherwise None.
     """
     ad = BRepAdaptor_Curve(topods_edge)
     if ad.IsRational():
@@ -146,7 +208,16 @@ def edge_to_bezier(topods_edge):
 #
 # 2D
 #
-def make_n_sided(edges, continuity=GeomAbs_C0):
+def make_n_sided(
+    edges: List[TopoDS_Edge], continuity: GeomAbs_Shape = GeomAbs_C0
+) -> TopoDS_Face:
+    """
+    Creates an n-sided face from a list of edges.
+
+    :param edges: A list of TopoDS_Edge that form a closed boundary.
+    :param continuity: The continuity of the surface. Defaults to GeomAbs_C0.
+    :return: The created TopoDS_Face.
+    """
     n_sided = BRepFill_Filling()
     for edg in edges:
         n_sided.Add(edg, continuity)
@@ -155,34 +226,36 @@ def make_n_sided(edges, continuity=GeomAbs_C0):
     return n_sided.Face()
 
 
-def make_face(*args):
+def make_face(*args: Union[TopoDS_Wire, Geom_Surface]) -> TopoDS_Face:
+    """
+    Creates a TopoDS_Face from various inputs.
+
+    Can create a face from:
+    - A TopoDS_Wire
+    - A Geom_Surface
+
+    :param args: The input geometry to create the face from.
+    :return: The created TopoDS_Face.
+    """
     face = BRepBuilderAPI_MakeFace(*args)
     assert_isdone(face, "failed to produce face")
     return face.Face()
 
 
-def get_aligned_boundingbox(shape, tol=1e-6, optimal_BB=True):
-    """return the bounding box of the TopoDS_Shape `shape`
+def get_aligned_boundingbox(
+    shape: TopoDS_Shape, tol: float = 1e-6, optimal_BB: bool = True
+) -> Tuple[gp_Pnt, List[float], TopoDS_Shape]:
+    """
+    Computes the axis-aligned bounding box of a shape.
 
-    Parameters
-    ----------
-
-    shape : TopoDS_Shape or a subclass such as TopoDS_Face
-        the shape to compute the bounding box from
-
-    tol: float
-        tolerance of the computed boundingbox
-
-    use_triangulation : bool, True by default
-        This makes the computation more accurate
-
-    Returns
-    -------
-        if `as_pnt` is True, return a tuple of gp_Pnt instances
-         for the lower and another for the upper X,Y,Z values representing the bounding box
-
-        if `as_pnt` is False, return a tuple of lower and then upper X,Y,Z values
-         representing the bounding box
+    :param shape: The TopoDS_Shape to compute the bounding box from.
+    :param tol: The tolerance of the bounding box. Defaults to 1e-6.
+    :param optimal_BB: If True, computes the optimal (tightest) bounding box.
+        Defaults to True.
+    :return: A tuple containing:
+        - The center of the bounding box (gp_Pnt).
+        - A list of the dimensions [dx, dy, dz] of the bounding box.
+        - A TopoDS_Shape representing the bounding box.
     """
     bbox = Bnd_Box()
     bbox.SetGap(tol)
@@ -205,22 +278,19 @@ def get_aligned_boundingbox(shape, tol=1e-6, optimal_BB=True):
     return center, [dx, dy, dz], box_shp
 
 
-def get_oriented_boundingbox(shape, optimal_OBB=True):
-    """return the oriented bounding box of the TopoDS_Shape `shape`
+def get_oriented_boundingbox(
+    shape: TopoDS_Shape, optimal_OBB: bool = True
+) -> Tuple[gp_Pnt, List[float], TopoDS_Shape]:
+    """
+    Computes the oriented bounding box of a shape.
 
-    Parameters
-    ----------
-
-    shape : TopoDS_Shape or a subclass such as TopoDS_Face
-        the shape to compute the bounding box from
-    optimal_OBB : bool, True by default. If set to True, compute the
-        optimal (i.e. the smallest oriented bounding box). Optimal OBB is
-        a bit longer.
-    Returns
-    -------
-        a list with center, x, y and z sizes
-
-        a shape
+    :param shape: The TopoDS_Shape to compute the bounding box from.
+    :param optimal_OBB: If True, computes the smallest possible oriented
+        bounding box. This can be slower. Defaults to True.
+    :return: A tuple containing:
+        - The center of the bounding box (gp_Pnt).
+        - A list of the half-dimensions [hx, hy, hz] of the bounding box.
+        - A TopoDS_Shape representing the bounding box.
     """
     obb = Bnd_OBB()
     if optimal_OBB:
@@ -254,19 +324,13 @@ def get_oriented_boundingbox(shape, optimal_OBB=True):
     return bary_center, [a_half_x, a_half_y, a_half_z], a_box
 
 
-def midpoint(point_A, point_B):
-    """computes the point that lies in the middle between pntA and pntB
+def midpoint(point_A: gp_Pnt, point_B: gp_Pnt) -> gp_Pnt:
+    """
+    Computes the midpoint between two points.
 
-    Parameters
-    ----------
-
-    pntA, pntB : gp_Pnt
-
-    Returns
-    -------
-
-    gp_Pnt
-
+    :param point_A: The first point (gp_Pnt).
+    :param point_B: The second point (gp_Pnt).
+    :return: The midpoint (gp_Pnt).
     """
     vec_1 = gp_Vec(point_A.XYZ())
     vec_2 = gp_Vec(point_B.XYZ())
@@ -274,35 +338,28 @@ def midpoint(point_A, point_B):
     return gp_Pnt(mid.XYZ())
 
 
-def center_boundingbox(shape):
-    """compute the center point of a TopoDS_Shape, based on its bounding box
+def center_boundingbox(shape: TopoDS_Shape) -> gp_Pnt:
+    """
+    Computes the center of the bounding box of a shape.
 
-    Parameters
-    ----------
-
-    shape : TopoDS_Shape instance or a subclass like TopoDS_Face
-
-    Returns
-    -------
-
-    gp_Pnt
-
+    :param shape: The TopoDS_Shape to compute the center of.
+    :return: The center point (gp_Pnt).
     """
     xmin, ymin, zmin, xmax, ymax, zmax = get_boundingbox(shape, 1e-6)
     return midpoint(gp_Pnt(xmin, ymin, zmin), gp_Pnt(xmax, ymax, zmax))
 
 
-def get_boundingbox(shape, tol=1e-6, use_mesh=True):
-    """return the bounding box of the TopoDS_Shape `shape`
-    Parameters
-    ----------
-    shape : TopoDS_Shape or a subclass such as TopoDS_Face
-        the shape to compute the bounding box from
-    tol: float
-        tolerance of the computed boundingbox
-    use_mesh : bool
-        a flag that tells whether or not the shape has first to be meshed before the bbox
-        computation. This produces more accurate results
+def get_boundingbox(
+    shape: TopoDS_Shape, tol: float = 1e-6, use_mesh: bool = True
+) -> Tuple[float, float, float, float, float, float]:
+    """
+    Computes the axis-aligned bounding box of a shape.
+
+    :param shape: The TopoDS_Shape to compute the bounding box from.
+    :param tol: The tolerance of the bounding box. Defaults to 1e-6.
+    :param use_mesh: If True, the shape is meshed before computing the
+        bounding box for better accuracy. Defaults to True.
+    :return: A tuple of the min and max coordinates (xmin, ymin, zmin, xmax, ymax, zmax).
     """
     bbox = Bnd_Box()
     bbox.SetGap(tol)
@@ -319,7 +376,15 @@ def get_boundingbox(shape, tol=1e-6, use_mesh=True):
     return xmin, ymin, zmin, xmax, ymax, zmax
 
 
-def translate_shp(shp, vec, copy=False):
+def translate_shp(shp: TopoDS_Shape, vec: gp_Vec, copy: bool = False) -> TopoDS_Shape:
+    """
+    Translates a shape by a vector.
+
+    :param shp: The TopoDS_Shape to translate.
+    :param vec: The translation vector (gp_Vec).
+    :param copy: If True, a new shape is created. Otherwise, the original shape is modified. Defaults to False.
+    :return: The translated TopoDS_Shape.
+    """
     trns = gp_Trsf()
     trns.SetTranslation(vec)
     brep_trns = BRepBuilderAPI_Transform(shp, trns, copy)
@@ -327,15 +392,17 @@ def translate_shp(shp, vec, copy=False):
     return brep_trns.Shape()
 
 
-def rotate_shape(shape, axis, angle, unite="deg"):
-    """Rotate a shape around an axis, with a given angle.
+def rotate_shape(
+    shape: TopoDS_Shape, axis: gp_Ax1, angle: float, unite: str = "deg"
+) -> TopoDS_Shape:
+    """
+    Rotates a shape around an axis by a given angle.
 
-    @param shape : the shape to rotate
-    @point : the origin of the axis
-    @vector : the axis direction
-    @angle : the value of the rotation
-
-    @return: the rotated shape.
+    :param shape: The TopoDS_Shape to rotate.
+    :param axis: The axis of rotation (gp_Ax1).
+    :param angle: The angle of rotation.
+    :param unite: The unit of the angle, either "deg" for degrees or "rad" for radians. Defaults to "deg".
+    :return: The rotated TopoDS_Shape.
     """
     assert_shape_not_null(shape)
     if unite == "deg":  # convert angle to radians
@@ -347,14 +414,18 @@ def rotate_shape(shape, axis, angle, unite="deg"):
     return brep_trns.Shape()
 
 
-def rotate_shp_3_axis(shape, rx, ry, rz, unity="deg"):
-    """Rotate a shape around (O,x), (O,y) and (O,z).
+def rotate_shp_3_axis(
+    shape: TopoDS_Shape, rx: float, ry: float, rz: float, unity: str = "deg"
+) -> TopoDS_Shape:
+    """
+    Rotates a shape around the X, Y, and Z axes.
 
-    @param rx_degree : rotation around (O,x)
-    @param ry_degree : rotation around (O,y)
-    @param rz_degree : rotation around (O,z)
-
-    @return : the rotated shape.
+    :param shape: The TopoDS_Shape to rotate.
+    :param rx: The rotation angle around the X-axis.
+    :param ry: The rotation angle around the Y-axis.
+    :param rz: The rotation angle around the Z-axis.
+    :param unity: The unit of the angles, either "deg" for degrees or "rad" for radians. Defaults to "deg".
+    :return: The rotated TopoDS_Shape.
     """
     assert_shape_not_null(shape)
     if unity == "deg":  # convert angle to radians
@@ -371,13 +442,15 @@ def rotate_shp_3_axis(shape, rx, ry, rz, unity="deg"):
     return brep_trns.Shape()
 
 
-def scale_shape(shape, fx, fy, fz):
-    """Scale a shape along the 3 directions
-    @param fx : scale factor in the x direction
-    @param fy : scale factor in the y direction
-    @param fz : scale factor in the z direction
+def scale_shape(shape: TopoDS_Shape, fx: float, fy: float, fz: float) -> TopoDS_Shape:
+    """
+    Scales a shape along the X, Y, and Z axes.
 
-    @return : the scaled shape
+    :param shape: The TopoDS_Shape to scale.
+    :param fx: The scaling factor along the X-axis.
+    :param fy: The scaling factor along the Y-axis.
+    :param fz: The scaling factor along the Z-axis.
+    :return: The scaled TopoDS_Shape.
     """
     assert_shape_not_null(shape)
     scale_trsf = gp_GTrsf()
@@ -386,11 +459,16 @@ def scale_shape(shape, fx, fy, fz):
     return BRepBuilderAPI_GTransform(shape, scale_trsf).Shape()
 
 
-def make_extrusion(face, length, vector=None):
-    """creates a extrusion from a face, along the vector vector.
-    with a distance length. Note that the normal vector does not
-    necessary be normalized.
-    By default, the extrusion is along the z axis.
+def make_extrusion(
+    face: TopoDS_Face, length: float, vector: gp_Vec = None
+) -> TopoDS_Shape:
+    """
+    Creates an extrusion from a face along a vector.
+
+    :param face: The TopoDS_Face to extrude.
+    :param length: The length of the extrusion.
+    :param vector: The direction of the extrusion (gp_Vec). If None, the Z-axis is used. Defaults to None.
+    :return: The extruded TopoDS_Shape (a solid).
     """
     if vector is None:
         vector = gp_Vec(0.0, 0.0, 1.0)
@@ -404,8 +482,18 @@ def make_extrusion(face, length, vector=None):
 ##################################
 # Recognize functions
 ##################################
-def recognize_face(topods_face):
-    """returns True if the TopoDS_Face is a planar surface"""
+def recognize_face(
+    topods_face: TopoDS_Face,
+) -> Tuple[str, gp_Pnt, gp_Dir]:
+    """
+    Recognizes the type of a TopoDS_Face and returns its properties.
+
+    :param topods_face: The face to recognize.
+    :return: A tuple containing:
+        - The type of the face as a string (e.g., "Plane", "Cylinder").
+        - The location of the surface (e.g., a point on the plane or axis).
+        - The normal or axis of the surface.
+    """
     if not isinstance(topods_face, TopoDS_Face):
         return "Not a face", None, None
     surf = BRepAdaptor_Surface(topods_face, True)
@@ -461,17 +549,30 @@ def recognize_face(topods_face):
 ##############################################################################
 # Measure functions
 ##############################################################################
-def measure_shape_volume(shape):
-    """Returns shape volume"""
+def measure_shape_volume(shape: TopoDS_Shape) -> float:
+    """
+    Measures the volume of a shape.
+
+    :param shape: The TopoDS_Shape to measure.
+    :return: The volume of the shape.
+    """
     inertia_props = GProp_GProps()
     brepgprop.VolumeProperties(shape, inertia_props)
     return inertia_props.Mass()
 
 
-def measure_shape_mass_center_of_gravity(shape):
-    """Returns the shape center of gravity
-    Returns a gp_Pnt if requested (set as_Pnt to True)
-    or a list of 3 coordinates, by default."""
+def measure_shape_mass_center_of_gravity(
+    shape: TopoDS_Shape,
+) -> Tuple[gp_Pnt, float, str]:
+    """
+    Measures the mass, center of gravity, and the property used for mass calculation (Length, Area, or Volume).
+
+    :param shape: The TopoDS_Shape to measure.
+    :return: A tuple containing:
+        - The center of gravity (gp_Pnt).
+        - The mass (a float).
+        - The mass property as a string ("Length", "Area", or "Volume").
+    """
     inertia_props = GProp_GProps()
     if is_edge(shape):
         brepgprop.LinearProperties(shape, inertia_props)

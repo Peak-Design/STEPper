@@ -21,7 +21,18 @@ from OCC.Display import OCCViewer
 
 
 class tkViewer3d(tk.Frame):
-    def __init__(self, parent, default=""):
+    """
+    A Tkinter widget for an OCC viewer.
+    """
+
+    def __init__(self, parent: "tk.Widget", default: str = "") -> None:
+        """
+        Initializes the tkViewer3d.
+
+        Args:
+            parent: The parent widget.
+            default (str, optional): The default value.
+        """
         tk.Frame.__init__(self, parent, width=1024, height=768)
         self.bind("<Map>", self.Map)
         self.bind("<Configure>", self.Resize)
@@ -39,33 +50,57 @@ class tkViewer3d(tk.Frame):
 
         self.drag_pos_y = self.drag_pos_x = 0
 
-    def LeftDown(self, event):
+    def LeftDown(self, event: "tk.Event") -> None:
+        """
+        Called when the left mouse button is pressed.
+        """
         self.drag_pos_x = event.x
         self.drag_pos_y = event.y
         self._display.StartRotation(self.drag_pos_x, self.drag_pos_y)
 
-    def Rotate(self, event):
+    def Rotate(self, event: "tk.Event") -> None:
+        """
+        Called when the mouse is moved with the left button pressed.
+        """
         self._display.Rotation(event.x, event.y)
 
-    def Pan(self, event):
+    def Pan(self, event: "tk.Event") -> None:
+        """
+        Called when the mouse is moved with the middle button pressed.
+        """
         dx = event.x - self.drag_pos_x
         dy = event.y - self.drag_pos_y
         self.drag_pos_x = event.x
         self.drag_pos_y = event.y
         self._display.Pan(dx, -dy)
 
-    def Zoom(self, event):
-        if event.num == 4:  # zoom in
+    def Zoom(self, event: "tk.Event") -> None:
+        """
+        Called when the mouse wheel is scrolled.
+        """
+        # Linux
+        if event.num == 4 or event.delta > 0:  # zoom in
             zoom_factor = 2.0
-        elif event.num == 5:  # zoom out
+        elif event.num == 5 or event.delta < 0:  # zoom out
             zoom_factor = 0.5
+        # Windows
+        if event.delta < 0:  # zoom out
+            zoom_factor = 1 / 1.2
+        elif event.delta > 0:  # zoom in
+            zoom_factor = 1.2
         self._display.ZoomFactor(zoom_factor)
 
-    def Resize(self, event):
+    def Resize(self, event: "tk.Event") -> None:
+        """
+        Called when the widget is resized.
+        """
         if self._inited:
             self._display.Repaint()
 
-    def Map(self, event):
+    def Map(self, event: "tk.Event") -> None:
+        """
+        Called when the widget is mapped.
+        """
         if not self._inited:
             self._display = OCCViewer.Viewer3d()
             self._display.Create(window_handle=self.winfo_id(), parent=self)

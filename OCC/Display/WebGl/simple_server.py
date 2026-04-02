@@ -15,7 +15,7 @@
 ##You should have received a copy of the GNU Lesser General Public License
 ##along with pythonOCC.  If not, see <http://www.gnu.org/licenses/>.
 
-""" A very simple webserver. """
+"""A very simple webserver."""
 
 import os
 import socket
@@ -23,14 +23,23 @@ import webbrowser
 import errno
 
 
-def get_available_port(port):
-    """sometimes, the python webserver is closed but the
-    port is not made available for a further call. So let's find
-    any available port to prevent such issue. This function:
-    * takes a port number (an integer), above 1024
-    * check if it is available
-    * if not, take another one
-    * returns the port number
+def get_available_port(port: int) -> int:
+    """
+    Gets an available port.
+
+    Sometimes, the python webserver is closed but the port is not made
+    available for a further call. So let's find any available port to
+    prevent such issue. This function:
+    - takes a port number (an integer), above 1024
+    - check if it is available
+    - if not, take another one
+    - returns the port number
+
+    Args:
+        port (int): The port to check.
+
+    Returns:
+        int: An available port.
     """
     if port <= 1024:
         raise AssertionError("port number should be > 1024")
@@ -51,12 +60,48 @@ def get_available_port(port):
     return port
 
 
-def start_server(addr="127.0.0.1", port=8080, x3d_path=".", open_webbrowser=False):
-    """starts the server if the PYTHONOCC_SHUNT_WEB_SERVER
-    env var is not set
-    * port: the port number to use (if available) ;
-    * path: where thehtml files are located
-    * open_webbrower: if True, open the web browser to the correct url
+def get_interface_ip(family: socket.AddressFamily) -> str:
+    """
+    Get the IP address of an external interface.
+
+    Used when binding to 0.0.0.0 or ::1 to show a more useful URL.
+    Inspired by `werkzeug`.
+
+    Args:
+        family (socket.AddressFamily): The address family.
+
+    Returns:
+        str: The IP address.
+    """
+    # arbitrary private address
+    host = "2001:db8::1" if family == socket.AF_INET6 else "192.0.2.1"
+
+    with socket.socket(family, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect((host, 58162))
+        except OSError:
+            return "::1" if family == socket.AF_INET6 else "127.0.0.1"
+
+        return s.getsockname()[0]  # type: ignore
+
+
+def start_server(
+    addr: str = "127.0.0.1",
+    port: int = 8080,
+    x3d_path: str = ".",
+    open_webbrowser: bool = False,
+) -> None:
+    """
+    Starts a simple web server.
+
+    The server is started if the PYTHONOCC_SHUNT_WEB_SERVER environment
+    variable is not set.
+
+    Args:
+        addr (str, optional): The address to bind to.
+        port (int, optional): The port to use.
+        x3d_path (str, optional): The path to the HTML files.
+        open_webbrowser (bool, optional): Whether to open a web browser.
     """
     if os.getenv("PYTHONOCC_SHUNT_WEB_SERVER") == "1":
         return False
@@ -74,10 +119,19 @@ def start_server(addr="127.0.0.1", port=8080, x3d_path=".", open_webbrowser=Fals
         port = get_available_port(port)
         httpd = HTTPServer((addr, port), SimpleHTTPRequestHandler)
         print(f"\n## Serving {x3d_path} using SimpleHTTPServer")
-        print("## Open your webbrowser at the URL: http://localhost:%i" % port)
+        display_hostname = "localhost"
+        if (
+            addr == "0.0.0.0"
+        ):  # Did not consider ipv6 `::` because httpd does not support it
+            display_hostname = get_interface_ip(socket.AF_INET)
+            print(f"## Running on all addresses ({addr})")
+        print(
+            "## Open your webbrowser at the URL: http://%s:%i"
+            % (display_hostname, port)
+        )
         # open webbrowser
         if open_webbrowser:
-            webbrowser.open("http://localhost:%i" % port, new=2)
+            webbrowser.open("http://%s:%i" % (display_hostname, port), new=2)
         # starts the web_server
         httpd.serve_forever()
     else:  # use flask
@@ -103,4 +157,4 @@ def start_server(addr="127.0.0.1", port=8080, x3d_path=".", open_webbrowser=Fals
 if __name__ == "__main__":
     get_available_port(port=8080)
     get_available_port(port=5022)
-    start_server(port=8080)
+    start_server(addr="0.0.0.0", port=8080)

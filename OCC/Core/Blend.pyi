@@ -10,21 +10,26 @@ from OCC.Core.gp import *
 from OCC.Core.TColgp import *
 from OCC.Core.Adaptor2d import *
 
-
 class Blend_SequenceOfPoint:
-    def __init__(self) -> None: ...
-    def __len__(self) -> int: ...
-    def Size(self) -> int: ...
+    def Assign(self, theItem: Blend_Point) -> Blend_Point: ...
     def Clear(self) -> None: ...
     def First(self) -> Blend_Point: ...
+    def IsDeletables(self) -> bool: ...
+    def IsEmpty(self) -> bool: ...
     def Last(self) -> Blend_Point: ...
     def Length(self) -> int: ...
-    def Append(self, theItem: Blend_Point) -> Blend_Point: ...
+    def Lower(self) -> int: ...
     def Prepend(self, theItem: Blend_Point) -> Blend_Point: ...
     def RemoveFirst(self) -> None: ...
     def Reverse(self) -> None: ...
-    def Value(self, theIndex: int) -> Blend_Point: ...
     def SetValue(self, theIndex: int, theValue: Blend_Point) -> None: ...
+    def Size(self) -> int: ...
+    def UpdateUpperBound(self, int) -> None: ...
+    def UpdateLowerBound(self, int) -> None: ...
+    def Upper(self) -> int: ...
+    def Value(self, theIndex: int) -> Blend_Point: ...
+    def __init__(self) -> None: ...
+    def __len__(self) -> int: ...
 
 class Blend_DecrochStatus(IntEnum):
     Blend_NoDecroch: int = ...
@@ -66,7 +71,14 @@ class Blend_AppFunction(math_FunctionSetWithDerivatives):
     @overload
     def GetTolerance(self, Tolerance: math_Vector, Tol: float) -> None: ...
     @overload
-    def GetTolerance(self, BoundTol: float, SurfTol: float, AngleTol: float, Tol3d: math_Vector, Tol1D: math_Vector) -> None: ...
+    def GetTolerance(
+        self,
+        BoundTol: float,
+        SurfTol: float,
+        AngleTol: float,
+        Tol3d: math_Vector,
+        Tol1D: math_Vector,
+    ) -> None: ...
     def Intervals(self, T: TColStd_Array1OfReal, S: GeomAbs_Shape) -> None: ...
     def IsRational(self) -> bool: ...
     def IsSolution(self, Sol: math_Vector, Tol: float) -> bool: ...
@@ -80,11 +92,38 @@ class Blend_AppFunction(math_FunctionSetWithDerivatives):
     def Pnt2(self) -> gp_Pnt: ...
     def Resolution(self, IC2d: int, Tol: float) -> Tuple[float, float]: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal) -> bool: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+    ) -> bool: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, Poles2d: TColgp_Array1OfPnt2d, Weigths: TColStd_Array1OfReal) -> None: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        Poles2d: TColgp_Array1OfPnt2d,
+        Weigths: TColStd_Array1OfReal,
+    ) -> None: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, D2Poles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, D2Poles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal, D2Weigths: TColStd_Array1OfReal) -> bool: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        D2Poles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        D2Poles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+        D2Weigths: TColStd_Array1OfReal,
+    ) -> bool: ...
     @overload
     def Set(self, Param: float) -> None: ...
     @overload
@@ -118,21 +157,106 @@ class Blend_Point:
     @overload
     def __init__(self) -> None: ...
     @overload
-    def __init__(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, Tg1: gp_Vec, Tg2: gp_Vec, Tg12d: gp_Vec2d, Tg22d: gp_Vec2d) -> None: ...
+    def __init__(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        Tg1: gp_Vec,
+        Tg2: gp_Vec,
+        Tg12d: gp_Vec2d,
+        Tg22d: gp_Vec2d,
+    ) -> None: ...
     @overload
-    def __init__(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float) -> None: ...
+    def __init__(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+    ) -> None: ...
     @overload
-    def __init__(self, Pts: gp_Pnt, Ptc: gp_Pnt, Param: float, U: float, V: float, W: float, Tgs: gp_Vec, Tgc: gp_Vec, Tg2d: gp_Vec2d) -> None: ...
+    def __init__(
+        self,
+        Pts: gp_Pnt,
+        Ptc: gp_Pnt,
+        Param: float,
+        U: float,
+        V: float,
+        W: float,
+        Tgs: gp_Vec,
+        Tgc: gp_Vec,
+        Tg2d: gp_Vec2d,
+    ) -> None: ...
     @overload
-    def __init__(self, Pts: gp_Pnt, Ptc: gp_Pnt, Param: float, U: float, V: float, W: float) -> None: ...
+    def __init__(
+        self, Pts: gp_Pnt, Ptc: gp_Pnt, Param: float, U: float, V: float, W: float
+    ) -> None: ...
     @overload
-    def __init__(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, PC: float, Tg1: gp_Vec, Tg2: gp_Vec, Tg12d: gp_Vec2d, Tg22d: gp_Vec2d) -> None: ...
+    def __init__(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        PC: float,
+        Tg1: gp_Vec,
+        Tg2: gp_Vec,
+        Tg12d: gp_Vec2d,
+        Tg22d: gp_Vec2d,
+    ) -> None: ...
     @overload
-    def __init__(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, PC: float) -> None: ...
+    def __init__(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        PC: float,
+    ) -> None: ...
     @overload
-    def __init__(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, PC1: float, PC2: float, Tg1: gp_Vec, Tg2: gp_Vec, Tg12d: gp_Vec2d, Tg22d: gp_Vec2d) -> None: ...
+    def __init__(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        PC1: float,
+        PC2: float,
+        Tg1: gp_Vec,
+        Tg2: gp_Vec,
+        Tg12d: gp_Vec2d,
+        Tg22d: gp_Vec2d,
+    ) -> None: ...
     @overload
-    def __init__(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, PC1: float, PC2: float) -> None: ...
+    def __init__(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        PC1: float,
+        PC2: float,
+    ) -> None: ...
     def IsTangencyPoint(self) -> bool: ...
     def Parameter(self) -> float: ...
     def ParameterOnC(self) -> float: ...
@@ -149,23 +273,110 @@ class Blend_Point:
     def PointOnS2(self) -> gp_Pnt: ...
     def SetParameter(self, Param: float) -> None: ...
     @overload
-    def SetValue(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, Tg1: gp_Vec, Tg2: gp_Vec, Tg12d: gp_Vec2d, Tg22d: gp_Vec2d) -> None: ...
+    def SetValue(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        Tg1: gp_Vec,
+        Tg2: gp_Vec,
+        Tg12d: gp_Vec2d,
+        Tg22d: gp_Vec2d,
+    ) -> None: ...
     @overload
-    def SetValue(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float) -> None: ...
+    def SetValue(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+    ) -> None: ...
     @overload
-    def SetValue(self, Pts: gp_Pnt, Ptc: gp_Pnt, Param: float, U: float, V: float, W: float, Tgs: gp_Vec, Tgc: gp_Vec, Tg2d: gp_Vec2d) -> None: ...
+    def SetValue(
+        self,
+        Pts: gp_Pnt,
+        Ptc: gp_Pnt,
+        Param: float,
+        U: float,
+        V: float,
+        W: float,
+        Tgs: gp_Vec,
+        Tgc: gp_Vec,
+        Tg2d: gp_Vec2d,
+    ) -> None: ...
     @overload
-    def SetValue(self, Pts: gp_Pnt, Ptc: gp_Pnt, Param: float, U: float, V: float, W: float) -> None: ...
+    def SetValue(
+        self, Pts: gp_Pnt, Ptc: gp_Pnt, Param: float, U: float, V: float, W: float
+    ) -> None: ...
     @overload
-    def SetValue(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, PC: float, Tg1: gp_Vec, Tg2: gp_Vec, Tg12d: gp_Vec2d, Tg22d: gp_Vec2d) -> None: ...
+    def SetValue(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        PC: float,
+        Tg1: gp_Vec,
+        Tg2: gp_Vec,
+        Tg12d: gp_Vec2d,
+        Tg22d: gp_Vec2d,
+    ) -> None: ...
     @overload
-    def SetValue(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, PC: float) -> None: ...
+    def SetValue(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        PC: float,
+    ) -> None: ...
     @overload
-    def SetValue(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, PC1: float, PC2: float, Tg1: gp_Vec, Tg2: gp_Vec, Tg12d: gp_Vec2d, Tg22d: gp_Vec2d) -> None: ...
+    def SetValue(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        PC1: float,
+        PC2: float,
+        Tg1: gp_Vec,
+        Tg2: gp_Vec,
+        Tg12d: gp_Vec2d,
+        Tg22d: gp_Vec2d,
+    ) -> None: ...
     @overload
-    def SetValue(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, U1: float, V1: float, U2: float, V2: float, PC1: float, PC2: float) -> None: ...
+    def SetValue(
+        self,
+        Pt1: gp_Pnt,
+        Pt2: gp_Pnt,
+        Param: float,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        PC1: float,
+        PC2: float,
+    ) -> None: ...
     @overload
-    def SetValue(self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, PC1: float, PC2: float) -> None: ...
+    def SetValue(
+        self, Pt1: gp_Pnt, Pt2: gp_Pnt, Param: float, PC1: float, PC2: float
+    ) -> None: ...
     def Tangent2d(self) -> gp_Vec2d: ...
     def Tangent2dOnS1(self) -> gp_Vec2d: ...
     def Tangent2dOnS2(self) -> gp_Vec2d: ...
@@ -206,7 +417,14 @@ class Blend_CSFunction(Blend_AppFunction):
     @overload
     def GetTolerance(self, Tolerance: math_Vector, Tol: float) -> None: ...
     @overload
-    def GetTolerance(self, BoundTol: float, SurfTol: float, AngleTol: float, Tol3d: math_Vector, Tol1D: math_Vector) -> None: ...
+    def GetTolerance(
+        self,
+        BoundTol: float,
+        SurfTol: float,
+        AngleTol: float,
+        Tol3d: math_Vector,
+        Tol1D: math_Vector,
+    ) -> None: ...
     def IsSolution(self, Sol: math_Vector, Tol: float) -> bool: ...
     def IsTangencyPoint(self) -> bool: ...
     def Knots(self, TKnots: TColStd_Array1OfReal) -> None: ...
@@ -220,11 +438,38 @@ class Blend_CSFunction(Blend_AppFunction):
     def PointOnC(self) -> gp_Pnt: ...
     def PointOnS(self) -> gp_Pnt: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal) -> bool: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+    ) -> bool: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, Poles2d: TColgp_Array1OfPnt2d, Weigths: TColStd_Array1OfReal) -> None: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        Poles2d: TColgp_Array1OfPnt2d,
+        Weigths: TColStd_Array1OfReal,
+    ) -> None: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, D2Poles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, D2Poles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal, D2Weigths: TColStd_Array1OfReal) -> bool: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        D2Poles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        D2Poles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+        D2Weigths: TColStd_Array1OfReal,
+    ) -> bool: ...
     @overload
     def Set(self, Param: float) -> None: ...
     @overload
@@ -244,10 +489,38 @@ class Blend_Function(Blend_AppFunction):
     def PointOnS1(self) -> gp_Pnt: ...
     def PointOnS2(self) -> gp_Pnt: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, Poles2d: TColgp_Array1OfPnt2d, Weigths: TColStd_Array1OfReal) -> None: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        Poles2d: TColgp_Array1OfPnt2d,
+        Weigths: TColStd_Array1OfReal,
+    ) -> None: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, D2Poles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, D2Poles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal, D2Weigths: TColStd_Array1OfReal) -> bool: ...
-    def Tangent(self, U1: float, V1: float, U2: float, V2: float, TgFirst: gp_Vec, TgLast: gp_Vec, NormFirst: gp_Vec, NormLast: gp_Vec) -> None: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        D2Poles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        D2Poles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+        D2Weigths: TColStd_Array1OfReal,
+    ) -> bool: ...
+    def Tangent(
+        self,
+        U1: float,
+        V1: float,
+        U2: float,
+        V2: float,
+        TgFirst: gp_Vec,
+        TgLast: gp_Vec,
+        NormFirst: gp_Vec,
+        NormLast: gp_Vec,
+    ) -> None: ...
     def Tangent2dOnS1(self) -> gp_Vec2d: ...
     def Tangent2dOnS2(self) -> gp_Vec2d: ...
     def TangentOnS1(self) -> gp_Vec: ...
@@ -256,7 +529,14 @@ class Blend_Function(Blend_AppFunction):
     def TwistOnS2(self) -> bool: ...
 
 class Blend_RstRstFunction(Blend_AppFunction):
-    def Decroch(self, Sol: math_Vector, NRst1: gp_Vec, TgRst1: gp_Vec, NRst2: gp_Vec, TgRst2: gp_Vec) -> Blend_DecrochStatus: ...
+    def Decroch(
+        self,
+        Sol: math_Vector,
+        NRst1: gp_Vec,
+        TgRst1: gp_Vec,
+        NRst2: gp_Vec,
+        TgRst2: gp_Vec,
+    ) -> Blend_DecrochStatus: ...
     def Derivatives(self, X: math_Vector, D: math_Matrix) -> bool: ...
     def GetBounds(self, InfBound: math_Vector, SupBound: math_Vector) -> None: ...
     def GetMinimalDistance(self) -> float: ...
@@ -266,7 +546,14 @@ class Blend_RstRstFunction(Blend_AppFunction):
     @overload
     def GetTolerance(self, Tolerance: math_Vector, Tol: float) -> None: ...
     @overload
-    def GetTolerance(self, BoundTol: float, SurfTol: float, AngleTol: float, Tol3d: math_Vector, Tol1D: math_Vector) -> None: ...
+    def GetTolerance(
+        self,
+        BoundTol: float,
+        SurfTol: float,
+        AngleTol: float,
+        Tol3d: math_Vector,
+        Tol1D: math_Vector,
+    ) -> None: ...
     def Intervals(self, T: TColStd_Array1OfReal, S: GeomAbs_Shape) -> None: ...
     def IsRational(self) -> bool: ...
     def IsSolution(self, Sol: math_Vector, Tol: float) -> bool: ...
@@ -285,11 +572,38 @@ class Blend_RstRstFunction(Blend_AppFunction):
     def PointOnRst1(self) -> gp_Pnt: ...
     def PointOnRst2(self) -> gp_Pnt: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, Poles2d: TColgp_Array1OfPnt2d, Weigths: TColStd_Array1OfReal) -> None: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        Poles2d: TColgp_Array1OfPnt2d,
+        Weigths: TColStd_Array1OfReal,
+    ) -> None: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal) -> bool: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+    ) -> bool: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, D2Poles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, D2Poles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal, D2Weigths: TColStd_Array1OfReal) -> bool: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        D2Poles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        D2Poles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+        D2Weigths: TColStd_Array1OfReal,
+    ) -> bool: ...
     @overload
     def Set(self, Param: float) -> None: ...
     @overload
@@ -312,7 +626,14 @@ class Blend_SurfRstFunction(Blend_AppFunction):
     @overload
     def GetTolerance(self, Tolerance: math_Vector, Tol: float) -> None: ...
     @overload
-    def GetTolerance(self, BoundTol: float, SurfTol: float, AngleTol: float, Tol3d: math_Vector, Tol1D: math_Vector) -> None: ...
+    def GetTolerance(
+        self,
+        BoundTol: float,
+        SurfTol: float,
+        AngleTol: float,
+        Tol3d: math_Vector,
+        Tol1D: math_Vector,
+    ) -> None: ...
     def Intervals(self, T: TColStd_Array1OfReal, S: GeomAbs_Shape) -> None: ...
     def IsRational(self) -> bool: ...
     def IsSolution(self, Sol: math_Vector, Tol: float) -> bool: ...
@@ -330,11 +651,38 @@ class Blend_SurfRstFunction(Blend_AppFunction):
     def PointOnRst(self) -> gp_Pnt: ...
     def PointOnS(self) -> gp_Pnt: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal) -> bool: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+    ) -> bool: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, DPoles: TColgp_Array1OfVec, D2Poles: TColgp_Array1OfVec, Poles2d: TColgp_Array1OfPnt2d, DPoles2d: TColgp_Array1OfVec2d, D2Poles2d: TColgp_Array1OfVec2d, Weigths: TColStd_Array1OfReal, DWeigths: TColStd_Array1OfReal, D2Weigths: TColStd_Array1OfReal) -> bool: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        DPoles: TColgp_Array1OfVec,
+        D2Poles: TColgp_Array1OfVec,
+        Poles2d: TColgp_Array1OfPnt2d,
+        DPoles2d: TColgp_Array1OfVec2d,
+        D2Poles2d: TColgp_Array1OfVec2d,
+        Weigths: TColStd_Array1OfReal,
+        DWeigths: TColStd_Array1OfReal,
+        D2Weigths: TColStd_Array1OfReal,
+    ) -> bool: ...
     @overload
-    def Section(self, P: Blend_Point, Poles: TColgp_Array1OfPnt, Poles2d: TColgp_Array1OfPnt2d, Weigths: TColStd_Array1OfReal) -> None: ...
+    def Section(
+        self,
+        P: Blend_Point,
+        Poles: TColgp_Array1OfPnt,
+        Poles2d: TColgp_Array1OfPnt2d,
+        Weigths: TColStd_Array1OfReal,
+    ) -> None: ...
     @overload
     def Set(self, Param: float) -> None: ...
     @overload
@@ -349,4 +697,3 @@ class Blend_SurfRstFunction(Blend_AppFunction):
 # harray1 classes
 # harray2 classes
 # hsequence classes
-

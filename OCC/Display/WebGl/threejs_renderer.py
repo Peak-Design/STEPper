@@ -1,4 +1,4 @@
-##Copyright 2011-2019 Thomas Paviot (tpaviot@gmail.com)
+##Copyright 2011-2024 Thomas Paviot (tpaviot@gmail.com)
 ##
 ##This file is part of pythonOCC.
 ##
@@ -21,6 +21,7 @@ from string import Template
 import sys
 import tempfile
 import uuid
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from OCC.Core.gp import gp_Vec
 from OCC.Core.Tesselator import ShapeTesselator
@@ -30,14 +31,23 @@ from OCC.Extend.TopologyUtils import is_edge, is_wire, discretize_edge, discreti
 from OCC.Display.WebGl.simple_server import start_server
 
 
-def spinning_cursor():
+def spinning_cursor() -> Generator[str, None, None]:
+    """
+    A spinning cursor generator.
+    """
     while True:
         yield from "|/-\\"
 
 
-def color_to_hex(rgb_color):
-    """Takes a tuple with 3 floats between 0 and 1.
-    Returns a hex. Useful to convert occ colors to web color code
+def color_to_hex(rgb_color: Tuple[float, float, float]) -> str:
+    """
+    Converts a color from RGB to a hex string.
+
+    Args:
+        rgb_color (tuple): A tuple of 3 floats (R, G, B) between 0 and 1.
+
+    Returns:
+        str: The color as a hex string.
     """
     r, g, b = rgb_color
     if not (0 <= r <= 1.0 and 0 <= g <= 1.0 and 0 <= b <= 1.0):
@@ -48,8 +58,17 @@ def color_to_hex(rgb_color):
     return "0x%.02x%.02x%.02x" % (rh, gh, bh)
 
 
-def export_edgedata_to_json(edge_hash, point_set):
-    """Export a set of points to a LineSegment buffergeometry"""
+def export_edgedata_to_json(edge_hash: str, point_set: List[List[float]]) -> str:
+    """
+    Exports a set of points to a LineSegment buffergeometry.
+
+    Args:
+        edge_hash (str): The hash of the edge.
+        point_set (list): A list of points.
+
+    Returns:
+        str: The JSON string.
+    """
     # first build the array of point coordinates
     # edges are built as follows:
     # points_coordinates  =[P0x, P0y, P0z, P1x, P1y, P1z, P2x, P2y, etc.]
@@ -168,9 +187,8 @@ MAIN_JS_TEMPLATE = Template(
     """
 import * as THREE from 'three';
 import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
-import Stats from 'three/addons/libs/stats.module.js'
 
-var camera, scene, renderer, object, stats, container, shape_material;
+var camera, scene, renderer, object, container, shape_material;
 var controls;
 var directionalLight;
 var axisHelper, gridHelper;
@@ -202,21 +220,21 @@ function init() {
 
     camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 200);
     camera.position.z = 100;
-    //controls = new THREE.OrbitControls(camera);
-    //controls = new THREE.OrbitControls(camera);
-    // for selection
+    
     raycaster = new THREE.Raycaster();
     mouse = new THREE.Vector2();
-    // create scene
+    
     scene = new THREE.Scene();
-    scene.add(new THREE.AmbientLight(0x101010));
-    directionalLight = new THREE.DirectionalLight(0xffffff);
-    directionalLight.position.x = 1;
-    directionalLight.position.y = -1;
-    directionalLight.position.z = 2;
-    directionalLight.position.normalize();
+    scene.background = new THREE.Color(0xf0f0f0);
+    const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
+    scene.add(ambientLight);
+
+    directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(1, 1, 1).normalize();
     scene.add(directionalLight);
-    light1 = new THREE.PointLight(0xffffff);
+
+    light1 = new THREE.PointLight(0xffffff, 0.8);
+    light1.position.set(50, 50, 50);
     scene.add(light1);
 
     $Uniforms
@@ -231,39 +249,41 @@ function init() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio( window.devicePixelRatio );
     container.appendChild(renderer.domElement);
-    //renderer.gammaInput = true;
-    //renderer.gammaOutput = true;
-    // for shadow rendering
+    
+    // shadow rendering
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    
+    // tone mapping
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    
     controls = new TrackballControls(camera, renderer.domElement);
-    // show stats, is it really useful ?
-    stats = new Stats();
-    stats.domElement.style.position = 'absolute';
-    stats.domElement.style.top = '2%';
-    stats.domElement.style.left = '1%';
-    container.appendChild(stats.domElement);
-    // add events
+    
     document.addEventListener('keypress', onDocumentKeyPress, false);
     document.addEventListener('click', onDocumentMouseClick, false);
     window.addEventListener('resize', onWindowResize, false);
 }
+
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
     render();
-    stats.update();
 }
+
 function update_lights() {
     if (directionalLight != undefined) {
         directionalLight.position.copy(camera.position);
     }
 }
+
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
+
 function onDocumentKeyPress(event) {
   event.preventDefault();
   if (event.key=="t") {  // t key
@@ -283,6 +303,7 @@ function onDocumentKeyPress(event) {
         }
   }
 }
+
 function onDocumentMouseClick(event) {
     event.preventDefault();
     mouse.x = ( event.clientX / window.innerWidth ) * 2 - 1;
@@ -306,11 +327,13 @@ function onDocumentMouseClick(event) {
         selected_target = target;
     }
 }
+
 function fit_to_scene() {
     // compute bounding sphere of whole scene
     var center = new THREE.Vector3(0,0,0);
     var radiuses = new Array();
     var positions = new Array();
+
     // compute center of all objects
     scene.traverse(function(child) {
         if (child instanceof THREE.Mesh) {
@@ -323,9 +346,11 @@ function fit_to_scene() {
             radiuses.push(radius);
         }
     });
+
     if (radiuses.length > 0) {
         center.divideScalar(radiuses.length*0.7);
     }
+
     var maxRad = 1.;
     // compute bounding radius
     for (var ichild = 0; ichild < radiuses.length; ++ichild) {
@@ -335,6 +360,7 @@ function fit_to_scene() {
             maxRad = totalDist;
         }
     }
+
     maxRad = maxRad * 0.7; // otherwise the scene seems to be too far away
     camera.lookAt(center);
     var direction = new THREE.Vector3().copy(camera.position).sub(controls.target);
@@ -348,18 +374,21 @@ function fit_to_scene() {
     var pnew = new THREE.Vector3().copy(center).add(direction);
     // change near far values to avoid culling of objects 
     camera.position.set(pnew.x, pnew.y, pnew.z);
-    camera.far = lnew*50;
-    camera.near = lnew*50*0.001;
+    camera.far = lnew * 50;
+    camera.near = lnew * 50 * 0.001;
     camera.updateProjectionMatrix();
     controls.target = center;
     controls.update();
+
     // adds and adjust a grid helper if needed
     gridHelper = new THREE.GridHelper(maxRad*4, 10)
     scene.add(gridHelper);
+
     // axisHelper
     axisHelper = new THREE.AxesHelper(maxRad);
     scene.add(axisHelper);
 }
+
 function render() {
     //@IncrementTime@  TODO UNCOMMENT
     update_lights();
@@ -370,11 +399,27 @@ function render() {
 
 
 class HTMLHeader:
-    def __init__(self, bg_gradient_color1="#ced7de", bg_gradient_color2="#808080"):
+    """
+    A class to generate the HTML header.
+    """
+
+    def __init__(
+        self, bg_gradient_color1: str = "#ced7de", bg_gradient_color2: str = "#808080"
+    ) -> None:
+        """
+        Initializes the HTMLHeader.
+
+        Args:
+            bg_gradient_color1 (str, optional): The first color of the background gradient.
+            bg_gradient_color2 (str, optional): The second color of the background gradient.
+        """
         self._bg_gradient_color1 = bg_gradient_color1
         self._bg_gradient_color2 = bg_gradient_color2
 
-    def get_str(self):
+    def get_str(self) -> str:
+        """
+        Returns the HTML header as a string.
+        """
         return HEADER_TEMPLATE.substitute(
             {
                 "bg_gradient_color1": f"{self._bg_gradient_color1}",
@@ -384,79 +429,57 @@ class HTMLHeader:
         )
 
 
-# class HTMLBody_Part1:
-#     def __init__(self, vertex_shader=None, fragment_shader=None, uniforms=None):
-#         self._vertex_shader = vertex_shader
-#         self._fragment_shader = fragment_shader
-#         self._uniforms = uniforms
-
-#     def get_str(self):
-#         global BODY_TEMPLATE_PART2
-#         # get the location where pythonocc is running from
-#         body_str = BODY_TEMPLATE_PART1.replace("@VERSION@", VERSION)
-#         if self._fragment_shader is not None:
-#             vertex_shader_string_definition = f'<script type="x-shader/x-vertex" id="vertexShader">{self._vertex_shader}</script>'
-#             fragment_shader_string_definition = f'<script type="x-shader/x-fragment" id="fragmentShader">{self._fragment_shader}</script>'
-#             shader_material_definition = """
-#             var vertexShader = document.getElementById('vertexShader').textContent;
-#             var fragmentShader = document.getElementById('fragmentShader').textContent;
-#             var shader_material = new THREE.ShaderMaterial({uniforms: uniforms,
-#                                                             vertexShader: vertexShader,
-#                                                             fragmentShader: fragmentShader});
-#             """
-#             if self._uniforms is None:
-#                 body_str = body_str.replace("@Uniforms@", "uniforms ={};\n")
-#                 BODY_TEMPLATE_PART2 = BODY_TEMPLATE_PART2.replace("@IncrementTime@", "")
-#             else:
-#                 body_str = body_str.replace("@Uniforms@", self._uniforms)
-#                 if "time" in self._uniforms:
-#                     BODY_TEMPLATE_PART2 = BODY_TEMPLATE_PART2.replace(
-#                         "@IncrementTime@", "uniforms.time.value += 0.05;"
-#                     )
-#                 else:
-#                     BODY_TEMPLATE_PART2 = BODY_TEMPLATE_PART2.replace("@IncrementTime@", "")
-#             body_str = body_str.replace(
-#                 "@VertexShaderDefinition@", vertex_shader_string_definition
-#             )
-#             body_str = body_str.replace(
-#                 "@FragmentShaderDefinition@", fragment_shader_string_definition
-#             )
-#             body_str = body_str.replace(
-#                 "@ShaderMaterialDefinition@", shader_material_definition
-#             )
-#             body_str = body_str.replace("@ShapeMaterial@", "shader_material")
-#         else:
-#             body_str = body_str.replace("@Uniforms@", "")
-#             body_str = body_str.replace("@VertexShaderDefinition@", "")
-#             body_str = body_str.replace("@FragmentShaderDefinition@", "")
-#             body_str = body_str.replace("@ShaderMaterialDefinition@", "")
-#             body_str = body_str.replace("@ShapeMaterial@", "phong_material")
-#             body_str = body_str.replace("@IncrementTime@", "")
-#         return body_str
-
-
 class ThreejsRenderer:
-    def __init__(self, path=None):
+    """
+    A renderer that uses three.js to display shapes in a web browser.
+    """
+
+    def __init__(self, path: Optional[str] = None) -> None:
+        """
+        Initializes the ThreejsRenderer.
+
+        Args:
+            path (str, optional): The path to the directory where the HTML
+                and JavaScript files will be created. If not specified, a
+                temporary directory will be created.
+        """
         self._path = tempfile.mkdtemp() if not path else path
         self._html_filename = os.path.join(self._path, "index.html")
         self._main_js_filename = os.path.join(self._path, "main.js")
-        self._3js_shapes = {}
-        self._3js_edges = {}
+        self._3js_shapes: Dict[str, Any] = {}
+        self._3js_edges: Dict[str, Any] = {}
         self.spinning_cursor = spinning_cursor()
-        print(f"## threejs renderer")
+        print("## threejs renderer")
 
     def DisplayShape(
         self,
-        shape,
-        export_edges=False,
-        color=(0.65, 0.65, 0.7),
-        specular_color=(0.2, 0.2, 0.2),
-        shininess=0.9,
-        transparency=0.0,
-        line_color=(0, 0.0, 0.0),
-        line_width=1.0,
-        mesh_quality=1.0,
-    ):
+        shape: Any,
+        export_edges: bool = False,
+        color: Tuple[float, float, float] = (0.65, 0.65, 0.7),
+        specular_color: Tuple[float, float, float] = (0.2, 0.2, 0.2),
+        shininess: float = 0.9,
+        transparency: float = 0.0,
+        line_color: Tuple[float, float, float] = (0, 0.0, 0.0),
+        line_width: float = 1.0,
+        mesh_quality: float = 1.0,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Displays a shape.
+
+        Args:
+            shape: The shape to display.
+            export_edges (bool, optional): Whether to export the edges of the shape.
+            color (tuple, optional): The color of the shape.
+            specular_color (tuple, optional): The specular color of the shape.
+            shininess (float, optional): The shininess of the shape.
+            transparency (float, optional): The transparency of the shape.
+            line_color (tuple, optional): The color of the lines.
+            line_width (float, optional): The width of the lines.
+            mesh_quality (float, optional): The quality of the mesh.
+
+        Returns:
+            A tuple containing the shapes and edges.
+        """
         # if the shape is an edge or a wire, use the related functions
         if is_edge(shape):
             print("discretize an edge")
@@ -506,7 +529,6 @@ class ThreejsRenderer:
             line_width,
         ]
         # generate the mesh
-        # tess.ExportShapeToThreejs(shape_hash, shape_full_path)
         # and also to JSON
         with open(shape_full_path, "w") as json_file:
             json_file.write(tess.ExportShapeToThreejsJSONString(shape_uuid))
@@ -533,8 +555,10 @@ class ThreejsRenderer:
                 self._3js_edges[edge_hash] = [(0, 0, 0), line_width]
         return self._3js_shapes, self._3js_edges
 
-    def generate_html_file(self):
-        """Generate the HTML file to be rendered by the web browser"""
+    def generate_html_file(self) -> None:
+        """
+        Generates the HTML file to be rendered by the web browser.
+        """
         global BODY_TEMPLATE
         # loop over shapes to generate html shapes stuff
         # the following line is a list that will help generating the string
@@ -559,6 +583,7 @@ class ThreejsRenderer:
                     f"specular:{color_to_hex(specular_color)},",
                     "shininess:%g," % shininess,
                     "side: THREE.DoubleSide,",
+                    "flatShading:false,",
                 )
             )
             if transparency > 0.0:
@@ -606,11 +631,6 @@ class ThreejsRenderer:
                     "ShaderMaterialDefinition": "",
                 }
             )
-            # fp.write(HTMLBody_Part1().get_str())
-            # fp.write("".join(shape_string_list))
-            # fp.write("".join(edge_string_list))
-            ## then write header part 2
-            # fp.write(BODY_TEMPLATE_PART2)
             fp.write(main_js)
 
         # write the index.html file
@@ -630,8 +650,20 @@ class ThreejsRenderer:
             fp.write(body)
             fp.write("</html>\n")
 
-    def render(self, addr="localhost", server_port=8080, open_webbrowser=False):
-        """render the scene into the browser."""
+    def render(
+        self,
+        addr: str = "localhost",
+        server_port: int = 8080,
+        open_webbrowser: bool = False,
+    ) -> None:
+        """
+        Renders the scene in the browser.
+
+        Args:
+            addr (str, optional): The address to bind the server to.
+            server_port (int, optional): The port to use for the server.
+            open_webbrowser (bool, optional): Whether to open a web browser.
+        """
         # generate HTML file
         self.generate_html_file()
         # then create a simple web server
@@ -641,10 +673,13 @@ class ThreejsRenderer:
 if __name__ == "__main__":
     from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeTorus
     from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCC.Core.gp import gp_Trsf
+    from OCC.Core.gp import gp_Trsf, gp_Vec
+    from OCC.Core.TopoDS import TopoDS_Shape
     import time
 
-    def translate_shp(shp, vec, copy=False):
+    def translate_shp(
+        shp: TopoDS_Shape, vec: gp_Vec, copy: bool = False
+    ) -> TopoDS_Shape:
         trns = gp_Trsf()
         trns.SetTranslation(vec)
         brep_trns = BRepBuilderAPI_Transform(shp, trns, copy)

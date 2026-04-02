@@ -15,48 +15,55 @@
 ##You should have received a copy of the GNU Lesser General Public License
 ##along with pythonOCC.  If not, see <http://www.gnu.org/licenses/>.
 
-from OCC.Core.Graphic3d import Graphic3d_NOM_DEFAULT
+from typing import Dict, List, Tuple, Optional
+
+from OCC.Core.AIS import AIS_InteractiveContext, AIS_Shape
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+from OCC.Core.gp import gp_Trsf
+from OCC.Core.Graphic3d import Graphic3d_NameOfMaterial
+from OCC.Core.TopoDS import TopoDS_Shape
 
 
 class Layer:
+    """
+    Manages a collection of shapes as a layer in a 3D viewer.
+
+    A layer holds a set of TopoDS_Shape objects and controls their visual
+    properties like color, transparency, and material. It provides methods
+    to add, remove, and manipulate these shapes.
+    """
+
     def __init__(
         self,
-        from_display,
-        shape=None,
-        color=0,
-        transparency=0.0,
-        material=Graphic3d_NOM_DEFAULT,
-    ):
-        r"""
-         Parameters
-        ----------
-        from_display: the display from the main code
-        shape: TopoDS_Shape
-        color: Quantity color
-        transparency: from 0.0 to 1.0
-
-        Returns
-        -------
-        None
+        from_display: AIS_InteractiveContext,
+        shape: Optional[TopoDS_Shape] = None,
+        color: int = 0,
+        transparency: float = 0.0,
+        material: Graphic3d_NameOfMaterial = Graphic3d_NameOfMaterial.Graphic3d_NOM_DEFAULT,
+    ) -> None:
         """
-        self.clear()
-        self.color = color
-        self.display = from_display
-        self.transparency = transparency
-        self.material = material
+        Initializes a new Layer.
+
+        :param from_display: The display object from the main application.
+        :param shape: A shape to add to the layer upon creation. Defaults to None.
+        :param color: The color of the shapes in the layer. Defaults to 0 (black).
+        :param transparency: The transparency of the shapes, from 0.0 (opaque) to 1.0 (fully transparent). Defaults to 0.0.
+        :param material: The material of the shapes. Defaults to Graphic3d_NOM_DEFAULT.
+        """
+        self.element_to_display: Dict[int, Tuple[TopoDS_Shape, AIS_Shape]] = {}
+        self.count: int = 0
+        self.color: int = color
+        self.display: AIS_InteractiveContext = from_display
+        self.transparency: float = transparency
+        self.material: Graphic3d_NameOfMaterial = material
         if shape is not None:
             self.add_shape(shape)
 
-    def add_shape(self, shape):
-        r"""
-         Parameters
-        ----------
-        shape: TopoDS_Shape
+    def add_shape(self, shape: TopoDS_Shape) -> None:
+        """
+        Adds a shape to the layer.
 
-        Returns
-        -------
-        None
+        :param shape: The TopoDS_Shape to add.
         """
         to_display = self.display.DisplayShape(
             shape, color=self.color, material=self.material
@@ -66,16 +73,12 @@ class Layer:
         self.count += 1
         self.display.Context.Erase(to_display, False)
 
-    def replace_shape(self, shape, index):
-        r"""
-         Parameters
-        ----------
-        shape: TopoDS_Shape
-        index: The index of the shape to replace
+    def replace_shape(self, shape: TopoDS_Shape, index: int) -> None:
+        """
+        Replaces a shape in the layer at a specific index.
 
-        Returns
-        -------
-        None
+        :param shape: The new TopoDS_Shape.
+        :param index: The index of the shape to replace.
         """
         self.display.Context.Erase(self.element_to_display[index][1], False)
         self.element_to_display.pop(index)
@@ -86,76 +89,62 @@ class Layer:
         self.element_to_display[index] = (shape, to_display)
         # self.display.Context.Erase(to_display, False)
 
-    def update_trsf_shape(self, shape, index, transformations):
-        r"""
-         Parameters
-        ----------
-        shape: TopoDS_Shape
-        index: The index of the shape to update and replace
-        transformations: gp_Trsf
+    def update_trsf_shape(
+        self, shape: TopoDS_Shape, index: int, transformations: gp_Trsf
+    ) -> None:
+        """
+        Applies a transformation to a shape and updates it in the layer.
 
-        Returns
-        -------
-        None
+        :param shape: The TopoDS_Shape to transform.
+        :param index: The index of the shape to update.
+        :param transformations: The gp_Trsf transformation to apply.
         """
         shape_moved = BRepBuilderAPI_Transform(shape, transformations, True).Shape()
         self.replace_shape(shape_moved, index)
 
-    def merge(self, layer, clear=False):
-        r"""
-         Parameters
-        ----------
-        layer: name of the layer to merge to the main one
-        clear: bool to clear the layer
+    def merge(self, layer: "Layer", clear: bool = False) -> None:
+        """
+        Merges another layer into this one.
 
-        Returns
-        -------
-        None
+        :param layer: The Layer to merge from.
+        :param clear: If True, the source layer is cleared after merging. Defaults to False.
         """
         for shape in layer.get_shapes():
             self.add_shape(shape)
         if clear is True:
             layer.clear()
 
-    def delete_shape_with_index(self, index):
-        r"""
-         Parameters
-        ----------
-        index: index of the shape to delete from layer
+    def delete_shape_with_index(self, index: int) -> None:
+        """
+        Deletes a shape from the layer by its index.
 
-        Returns
-        -------
-        None
+        :param index: The index of the shape to delete.
         """
         self.element_to_display.pop(index)
 
-    def delete_shape(self, shape_to_del):
-        r"""
-         Parameters
-        ----------
-        shape: the TopoDS_Shape to delete from layer
+    def delete_shape(self, shape_to_del: TopoDS_Shape) -> None:
+        """
+        Deletes a shape from the layer.
 
-        Returns
-        -------
-        None
+        :param shape_to_del: The TopoDS_Shape to delete.
         """
         for index, element in self.element_to_display.items():
             shape, ais_shape = element
             if shape_to_del == shape:
                 self.element_to_display.pop(index)
 
-    def clear(self):
-        r"""
-        Clear the layer from its shapes
+    def clear(self) -> None:
+        """
+        Removes all shapes from the layer.
         """
         self.element_to_display = {}
         self.count = 0
 
-    def get_shapes(self):
-        r"""
-        Returns
-        -------
-        List of TopoDS_Shape
+    def get_shapes(self) -> List[TopoDS_Shape]:
+        """
+        Gets all the shapes in the layer.
+
+        :return: A list of TopoDS_Shape objects.
         """
         topods_shapes = []
         for index, element in self.element_to_display.items():
@@ -163,33 +152,33 @@ class Layer:
             topods_shapes.append(shape)
         return topods_shapes
 
-    def get_aisshape_from_topodsshape(self, topshape):
-        r"""
-         Parameters
-        ----------
-        topshape: the TopoDS_Shape linked to the AIS_Shape to retrieve
+    def get_aisshape_from_topodsshape(
+        self, topshape: TopoDS_Shape
+    ) -> Optional[Tuple[AIS_Shape, int]]:
+        """
+        Gets the displayed AIS_Shape corresponding to a TopoDS_Shape.
 
-        Returns
-        -------
-        AIS_Shape, index of shape
+        :param topshape: The TopoDS_Shape to find the AIS_Shape for.
+        :return: A tuple containing the AIS_Shape and its index, or None if not found.
         """
         for index, element in self.element_to_display.items():
             shape, ais_shape = element
             if shape == topshape:
                 return ais_shape, index
+        return None
 
-    def hide(self):
-        r"""
-        hide the layer from display
+    def hide(self) -> None:
+        """
+        Hides the layer from the display.
         """
         for index, element in self.element_to_display.items():
             shape, ais_shape = element
             self.display.Context.Erase(ais_shape, False)
             self.display.View.Redraw()
 
-    def show(self):
-        r"""
-        Show the layer to display
+    def show(self) -> None:
+        """
+        Shows the layer in the display.
         """
         for index, element in self.element_to_display.items():
             shape, ais = element

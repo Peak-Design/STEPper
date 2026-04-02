@@ -1,4 +1,4 @@
-##Copyright 2018 Thomas Paviot (tpaviot@gmail.com)
+##Copyright 2018-2024 Thomas Paviot (tpaviot@gmail.com)
 ##
 ##This file is part of pythonOCC.
 ##
@@ -16,16 +16,15 @@
 ##along with pythonOCC.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
+from typing import Union, List, Dict, Tuple, Any
 
-from OCC.Core.TopoDS import TopoDS_Shape
-from OCC.Core.TopAbs import TopAbs_SOLID, TopAbs_SHELL, TopAbs_COMPOUND
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape
 from OCC.Core.BRepTools import breptools
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.StlAPI import stlapi, StlAPI_Writer
 from OCC.Core.BRep import BRep_Builder
 from OCC.Core.gp import gp_Pnt, gp_Dir, gp_Pnt2d
 from OCC.Core.Bnd import Bnd_Box2d
-from OCC.Core.TopoDS import TopoDS_Compound
 from OCC.Core.IGESControl import (
     IGESControl_Controller,
     IGESControl_Reader,
@@ -47,25 +46,26 @@ from OCC.Core.STEPCAFControl import STEPCAFControl_Reader
 from OCC.Core.TDF import TDF_LabelSequence, TDF_Label
 from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCC.Core.TopLoc import TopLoc_Location
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+from OCC.Core.BRepBuilderAPI import (
+    BRepBuilderAPI_Transform,
+    BRepBuilderAPI_Sewing,
+    BRepBuilderAPI_MakeSolid,
+)
+
 from OCC.Core.TColStd import TColStd_IndexedDataMapOfStringString
 from OCC.Core.TCollection import TCollection_AsciiString
 from OCC.Core.RWPly import RWPly_CafWriter
 from OCC.Core.Message import Message_ProgressRange
 
 from OCC.Core.RWGltf import RWGltf_CafReader, RWGltf_CafWriter
-from OCC.Core.RWObj import RWObj_CafWriter, RWObj_CafReader
+from OCC.Core.RWObj import RWObj_CafWriter
 from OCC.Core.RWMesh import (
     RWMesh_CoordinateSystem_posYfwd_posZup,
     RWMesh_CoordinateSystem_negZfwd_posYup,
 )
 from OCC.Core.UnitsMethods import unitsmethods
 
-from OCC.Extend.TopologyUtils import (
-    discretize_edge,
-    get_sorted_hlr_edges,
-    list_of_shapes_to_compound,
-)
+from OCC.Extend.TopologyUtils import discretize_edge, get_sorted_hlr_edges
 
 try:
     import svgwrite
@@ -85,73 +85,105 @@ def check_svgwrite_installed():
 ##########################
 # Step import and export #
 ##########################
-def read_step_file(filename, as_compound=True, verbosity=True):
-    """read the STEP file and returns a compound
-    filename: the file path
-    verbosity: optional, False by default.
-    as_compound: True by default. If there are more than one shape at root,
-    gather all shapes into one compound. Otherwise returns a list of shapes.
+def read_step_file(
+    filename: str, as_compound: bool = True, verbosity: bool = False
+) -> Union[TopoDS_Shape, List[TopoDS_Shape]]:
+    """Read a STEP file and return the contained shape(s).
+
+    Args:
+        filename: Path to the STEP file to read
+        as_compound: If True, combine multiple shapes into a single compound.
+                    Defaults to True.
+        verbosity: If True, print detailed information during import.
+                  Defaults to False.
+
+    Returns:
+        Either a single TopoDS_Shape (if as_compound=True or only one shape present)
+        or a list of TopoDS_Shape objects
+
+    Raises:
+        FileNotFoundError: If the specified file does not exist
+        AssertionError: If there are errors during STEP file reading or conversion
     """
     if not os.path.isfile(filename):
-        raise FileNotFoundError(f"{filename} not found.")
+        raise FileNotFoundError(f"STEP file not found: {filename}")
 
     step_reader = STEPControl_Reader()
     status = step_reader.ReadFile(filename)
 
     if status != IFSelect_RetDone:
         raise AssertionError("Error: can't read file.")
+
     if verbosity:
-        failsonly = False
-        step_reader.PrintCheckLoad(failsonly, IFSelect_ItemsByEntity)
-        step_reader.PrintCheckTransfer(failsonly, IFSelect_ItemsByEntity)
+        step_reader.PrintCheckLoad(False, IFSelect_ItemsByEntity)
+        step_reader.PrintCheckTransfer(False, IFSelect_ItemsByEntity)
+
     transfer_result = step_reader.TransferRoots()
     if not transfer_result:
         raise AssertionError("Transfer failed.")
-    _nbs = step_reader.NbShapes()
-    if _nbs == 0:
+
+    nb_shapes = step_reader.NbShapes()
+    if nb_shapes == 0:
         raise AssertionError("No shape to transfer.")
-    if _nbs == 1:  # most cases
-        return step_reader.Shape(1)
-    if _nbs > 1:
-        print("Number of shapes:", _nbs)
-        shps = []
-        # loop over root shapes
-        for k in range(1, _nbs + 1):
-            new_shp = step_reader.Shape(k)
-            if not new_shp.IsNull():
-                shps.append(new_shp)
+
+    if nb_shapes == 1:
         if as_compound:
-            compound, result = list_of_shapes_to_compound(shps)
-            if not result:
-                print("Warning: all shapes were not added to the compound")
-            return compound
-        print("Warning, returns a list of shapes.")
-        return shps
-    return None
+            return step_reader.Shape(1)
+
+        return [step_reader.Shape(1)]
+
+    shapes = []
+    for i in range(1, nb_shapes + 1):
+        shape = step_reader.Shape(i)
+        if not shape.IsNull():
+            shapes.append(shape)
+
+    if as_compound:
+        compound = TopoDS_Compound()
+        builder = BRep_Builder()
+        builder.MakeCompound(compound)
+        for shape in shapes:
+            builder.Add(compound, shape)
+        return compound
+
+    return shapes
 
 
-def write_step_file(a_shape, filename, application_protocol="AP203"):
-    """exports a shape to a STEP file
-    a_shape: the topods_shape to export (a compound, a solid etc.)
-    filename: the filename
-    application protocol: "AP203" or "AP214IS" or "AP242DIS"
+def write_step_file(
+    shape: TopoDS_Shape, filename: str, application_protocol: str = "AP203"
+) -> None:
+    """Export a shape to STEP format.
+
+    Args:
+        shape: The shape to export
+        filename: Target STEP file path
+        application_protocol: STEP format version to use.
+                            Can be "AP203" (basic geometry), "AP214IS" (colors and layers),
+                            or "AP242DIS" (latest version with PMI support).
+                            Defaults to "AP203".
+
+    Raises:
+        AssertionError: If shape is null or protocol is invalid
+        IOError: If export fails
     """
-    # a few checks
-    if a_shape.IsNull():
-        raise AssertionError(f"Shape {a_shape} is null.")
+    if shape.IsNull():
+        raise AssertionError("Shape is null.")
+
     if application_protocol not in ["AP203", "AP214IS", "AP242DIS"]:
         raise AssertionError(
             f"application_protocol must be either AP203 or AP214IS. You passed {application_protocol}."
         )
+
     if os.path.isfile(filename):
         print(f"Warning: {filename} file already exists and will be replaced")
-    # creates and initialise the step exporter
-    step_writer = STEPControl_Writer()
+
+    # Initialize STEP writer
+    writer = STEPControl_Writer()
     Interface_Static.SetCVal("write.step.schema", application_protocol)
 
-    # transfer shapes and write file
-    step_writer.Transfer(a_shape, STEPControl_AsIs)
-    status = step_writer.Write(filename)
+    # Convert and write shape
+    writer.Transfer(shape, STEPControl_AsIs)
+    status = writer.Write(filename)
 
     if status != IFSelect_RetDone:
         raise IOError("Error while writing shape to STEP file.")
@@ -159,9 +191,19 @@ def write_step_file(a_shape, filename, application_protocol="AP203"):
         raise IOError(f"{filename} not saved to filesystem.")
 
 
-def read_step_file_with_names_colors(filename):
-    """Returns list of tuples (topods_shape, label, color)
-    Use OCAF.
+def read_step_file_with_names_colors(
+    filename: str,
+) -> Dict[TopoDS_Shape, List[Union[str, Quantity_Color]]]:
+    """
+    Reads a STEP file and extracts shapes with their names and colors using OCAF.
+
+    This function processes a STEP file, including its assembly structure,
+    and returns a dictionary mapping each shape to its name and color.
+
+    :param filename: The path to the STEP file.
+    :return: A dictionary where keys are TopoDS_Shape objects and values are
+             lists containing the shape's name and its Quantity_Color.
+    :raises FileNotFoundError: If the specified file does not exist.
     """
     if not os.path.isfile(filename):
         raise FileNotFoundError(f"{filename} not found.")
@@ -191,31 +233,12 @@ def read_step_file_with_names_colors(filename):
     locs = []
 
     def _get_sub_shapes(lab, loc):
-        # global cnt, lvl
-        # cnt += 1
-        # print("\n[%d] level %d, handling LABEL %s\n" % (cnt, lvl, _get_label_name(lab)))
-        # print()
-        # print(lab.DumpToString())
-        # print()
-        # print("Is Assembly    :", shape_tool.IsAssembly(lab))
-        # print("Is Free        :", shape_tool.IsFree(lab))
-        # print("Is Shape       :", shape_tool.IsShape(lab))
-        # print("Is Compound    :", shape_tool.IsCompound(lab))
-        # print("Is Component   :", shape_tool.IsComponent(lab))
-        # print("Is SimpleShape :", shape_tool.IsSimpleShape(lab))
-        # print("Is Reference   :", shape_tool.IsReference(lab))
-
-        # users = TDF_LabelSequence()
-        # users_cnt = shape_tool.GetUsers(lab, users)
-        # print("Nr Users       :", users_cnt)
-
         l_subss = TDF_LabelSequence()
         shape_tool.GetSubShapes(lab, l_subss)
         # print("Nb subshapes   :", l_subss.Length())
         l_comps = TDF_LabelSequence()
         shape_tool.GetComponents(lab, l_comps)
-        # print("Nb components  :", l_comps.Length())
-        # print()
+
         name = lab.GetLabelName()
         print("Name :", name)
 
@@ -229,27 +252,8 @@ def read_step_file_with_names_colors(filename):
                     label_reference = TDF_Label()
                     shape_tool.GetReferredShape(label, label_reference)
                     loc = shape_tool.GetLocation(label)
-                    # print("    loc          :", loc)
-                    # trans = loc.Transformation()
-                    # print("    tran form    :", trans.Form())
-                    # rot = trans.GetRotation()
-                    # print("    rotation     :", rot)
-                    # print("    X            :", rot.X())
-                    # print("    Y            :", rot.Y())
-                    # print("    Z            :", rot.Z())
-                    # print("    W            :", rot.W())
-                    # tran = trans.TranslationPart()
-                    # print("    translation  :", tran)
-                    # print("    X            :", tran.X())
-                    # print("    Y            :", tran.Y())
-                    # print("    Z            :", tran.Z())
-
                     locs.append(loc)
-                    # print(">>>>")
-                    # lvl += 1
                     _get_sub_shapes(label_reference, loc)
-                    # lvl -= 1
-                    # print("<<<<")
                     locs.pop()
 
         elif shape_tool.IsSimpleShape(lab):
@@ -258,24 +262,9 @@ def read_step_file_with_names_colors(filename):
             # print("    all ass locs   :", locs)
 
             loc = TopLoc_Location()
-            for l in locs:
-                # print("    take loc       :", l)
-                loc = loc.Multiplied(l)
+            for location in locs:
+                loc = loc.Multiplied(location)
 
-            # trans = loc.Transformation()
-            # print("    FINAL loc    :")
-            # print("    tran form    :", trans.Form())
-            # rot = trans.GetRotation()
-            # print("    rotation     :", rot)
-            # print("    X            :", rot.X())
-            # print("    Y            :", rot.Y())
-            # print("    Z            :", rot.Z())
-            # print("    W            :", rot.W())
-            # tran = trans.TranslationPart()
-            # print("    translation  :", tran)
-            # print("    X            :", tran.X())
-            # print("    Y            :", tran.Y())
-            # print("    Z            :", tran.Z())
             c = Quantity_Color(0.5, 0.5, 0.5, Quantity_TOC_RGB)  # default color
             color_set = False
             if (
@@ -375,12 +364,7 @@ def read_step_file_with_names_colors(filename):
     def _get_shapes():
         labels = TDF_LabelSequence()
         shape_tool.GetFreeShapes(labels)
-        # global cnt
-        # cnt += 1
-
-        print()
         print("Number of shapes at root :", labels.Length())
-        print()
         for i in range(labels.Length()):
             root_item = labels.Value(i + 1)
             _get_sub_shapes(root_item, None)
@@ -393,52 +377,91 @@ def read_step_file_with_names_colors(filename):
 # STL import and export #
 #########################
 def write_stl_file(
-    a_shape, filename, mode="ascii", linear_deflection=0.9, angular_deflection=0.5
-):
-    """export the shape to a STL file
-    Be careful, the shape first need to be explicitly meshed using BRepMesh_IncrementalMesh
-    a_shape: the topods_shape to export
-    filename: the filename
-    mode: optional, "ascii" by default. Can either be "binary"
-    linear_deflection: optional, default to 0.001. Lower, more occurate mesh
-    angular_deflection: optional, default to 0.5. Lower, more accurate_mesh
+    shape: TopoDS_Shape,
+    filename: str,
+    mode: str = "ascii",
+    linear_deflection: float = 0.9,
+    angular_deflection: float = 0.5,
+) -> None:
     """
-    if a_shape.IsNull():
+    Export a shape to STL format.
+
+    The shape is first meshed using the specified deflection parameters before export.
+
+    :param shape: The shape to export.
+    :param filename: Target STL file path.
+    :param mode: Export format, either "ascii" or "binary". Defaults to "ascii".
+    :param linear_deflection: Maximum distance between mesh and actual surface.
+                              Lower values produce more accurate but larger meshes.
+                              Defaults to 0.9.
+    :param angular_deflection: Maximum angle between mesh elements in radians.
+                               Lower values produce smoother meshes.
+                               Defaults to 0.5.
+    :raises AssertionError: If shape is null or meshing fails.
+    :raises IOError: If export fails.
+    """
+    if shape.IsNull():
         raise AssertionError("Shape is null.")
+
     if mode not in ["ascii", "binary"]:
         raise AssertionError("mode should be either ascii or binary")
+
     if os.path.isfile(filename):
         print(f"Warning: {filename} already exists and will be replaced")
-    # first mesh the shape
+
+    # Mesh the shape
     mesh = BRepMesh_IncrementalMesh(
-        a_shape, linear_deflection, False, angular_deflection, True
+        shape, linear_deflection, False, angular_deflection, True
     )
-    # mesh.SetDeflection(0.05)
     mesh.Perform()
     if not mesh.IsDone():
         raise AssertionError("Mesh is not done.")
 
-    stl_exporter = StlAPI_Writer()
-    if mode == "ascii":
-        stl_exporter.SetASCIIMode(True)
-    else:  # binary, just set the ASCII flag to False
-        stl_exporter.SetASCIIMode(False)
-    stl_exporter.Write(a_shape, filename)
+    # Export to STL
+    writer = StlAPI_Writer()
+    writer.SetASCIIMode(mode == "ascii")
+    writer.Write(shape, filename)
 
     if not os.path.isfile(filename):
         raise IOError("File not written to disk.")
 
 
-def read_stl_file(filename):
-    """opens a stl file, reads the content, and returns a BRep topods_shape object"""
+def read_stl_file(
+    filename: str, sew_shape: bool = False, make_solid: bool = False
+) -> TopoDS_Shape:
+    """
+    Reads an STL file and returns a TopoDS_Shape.
+
+    :param filename: The path to the STL file.
+    :param sew_shape: sew all triangular faces after loading
+    :param make_solid: fill the surfacic mesh to return a TopoDS_Solid
+    :return: The shape read from the file.
+    :raises FileNotFoundError: If the specified file does not exist.
+    :raises AssertionError: If the shape in the file is null.
+    """
     if not os.path.isfile(filename):
         raise FileNotFoundError(f"{filename} not found.")
+
+    if not sew_shape and make_solid:
+        raise AssertionError("Please enable sew_shape in order to make solid.")
 
     the_shape = TopoDS_Shape()
     stlapi.Read(the_shape, filename)
 
     if the_shape.IsNull():
         raise AssertionError("Shape is null.")
+
+    if sew_shape:
+        sewer = BRepBuilderAPI_Sewing()
+        sewer.Add(the_shape)
+        sewer.Perform()
+        sewed_shape = sewer.SewedShape()
+
+        if make_solid:
+            return BRepBuilderAPI_MakeSolid(sewed_shape).Shape()
+
+        # Return the sewed shape
+        return sewed_shape
 
     return the_shape
 
@@ -447,13 +470,23 @@ def read_stl_file(filename):
 # IGES import/export #
 ######################
 def read_iges_file(
-    filename, return_as_shapes=False, verbosity=False, visible_only=False
-):
-    """read the IGES file and returns a compound
-    filename: the file path
-    return_as_shapes: optional, False by default. If True returns a list of shapes,
-                      else returns a single compound
-    verbosity: optionl, False by default.
+    filename: str,
+    return_as_shapes: bool = False,
+    verbosity: bool = False,
+    visible_only: bool = False,
+) -> List[TopoDS_Shape]:
+    """
+    Reads an IGES file and returns the shapes.
+
+    :param filename: The path to the IGES file.
+    :param return_as_shapes: If True, returns a list of shapes. Otherwise, returns
+                             a single compound shape. Defaults to False.
+    :param verbosity: If True, prints detailed information during import.
+                      Defaults to False.
+    :param visible_only: If True, only reads visible entities. Defaults to False.
+    :return: A list of shapes or a single compound shape.
+    :raises FileNotFoundError: If the specified file does not exist.
+    :raises IOError: If the file cannot be read.
     """
     if not os.path.isfile(filename):
         raise FileNotFoundError(f"{filename} not found.")
@@ -463,13 +496,6 @@ def read_iges_file(
     iges_reader = IGESControl_Reader()
     iges_reader.SetReadVisible(visible_only)
     status = iges_reader.ReadFile(filename)
-
-    _shapes = []
-
-    builder = BRep_Builder()
-    compound = TopoDS_Compound()
-    builder.MakeCompound(compound)
-    empty_compound = True
 
     if status != IFSelect_RetDone:  # check status
         raise IOError("Cannot read IGES file")
@@ -482,42 +508,39 @@ def read_iges_file(
     iges_reader.TransferRoots()
     nbr = iges_reader.NbShapes()
 
+    _shapes = []
     for i in range(1, nbr + 1):
         a_shp = iges_reader.Shape(i)
         if not a_shp.IsNull():
-            if a_shp.ShapeType() in [TopAbs_SOLID, TopAbs_SHELL, TopAbs_COMPOUND]:
-                _shapes.append(a_shp)
-            else:  # other shape types are merged into a compound
-                builder.Add(compound, a_shp)
-                empty_compound = False
-
-    if not empty_compound:
-        _shapes.append(compound)
+            _shapes.append(a_shp)
 
     # create a compound and store all shapes
     if not return_as_shapes:
-        builder_2 = BRep_Builder()
-        compound_2 = TopoDS_Compound()
-        builder_2.MakeCompound(compound_2)
+        builder = BRep_Builder()
+        compound = TopoDS_Compound()
+        builder.MakeCompound(compound)
         for s in _shapes:
-            builder_2.Add(compound_2, s)
-        _shapes = compound_2
+            builder.Add(compound, s)
+        return [compound]
 
     return _shapes
 
 
-def write_iges_file(a_shape, filename):
-    """exports a shape to a STEP file
-    a_shape: the topods_shape to export (a compound, a solid etc.)
-    filename: the filename
-    application protocol: "AP203" or "AP214"
+def write_iges_file(a_shape: TopoDS_Shape, filename: str):
+    """
+    Exports a shape to an IGES file.
+
+    :param a_shape: The TopoDS_Shape to export.
+    :param filename: The path to the output IGES file.
+    :raises AssertionError: If the shape is null or the export fails.
+    :raises IOError: If the file cannot be written to disk.
     """
     # a few checks
     if a_shape.IsNull():
         raise AssertionError("Shape is null.")
     if os.path.isfile(filename):
         print(f"Warning: {filename} already exists and will be replaced")
-    # creates and initialise the step exporter
+    # create and initialize the step exporter
     iges_writer = IGESControl_Writer()
     iges_writer.AddShape(a_shape)
     status = iges_writer.Write(filename)
@@ -531,8 +554,17 @@ def write_iges_file(a_shape, filename):
 ##############
 # SVG export #
 ##############
-def edge_to_svg_polyline(topods_edge, tol=0.1, unit="mm"):
-    """Returns a svgwrite.Path for the edge, and the 2d bounding box"""
+def edge_to_svg_polyline(
+    topods_edge: TopoDS_Edge, tol: float = 0.1, unit: str = "mm"
+) -> Tuple[Any, Bnd_Box2d]:
+    """
+    Converts a TopoDS_Edge to an SVG polyline.
+
+    :param topods_edge: The edge to convert.
+    :param tol: The tolerance for discretization. Defaults to 0.1.
+    :param unit: The unit of the coordinates ('mm' or 'm'). Defaults to 'mm'.
+    :return: A tuple containing the svgwrite.shapes.Polyline and the 2D bounding box.
+    """
     check_svgwrite_installed()
 
     unit_factor = 1  # by default
@@ -557,29 +589,36 @@ def edge_to_svg_polyline(topods_edge, tol=0.1, unit="mm"):
 
 
 def export_shape_to_svg(
-    shape,
-    filename=None,
-    width=800,
-    height=600,
-    margin_left=10,
-    margin_top=30,
-    export_hidden_edges=True,
-    location=gp_Pnt(0, 0, 0),
-    direction=gp_Dir(1, 1, 1),
-    color="black",
-    line_width="1px",
-    unit="mm",
-):
-    """export a single shape to an svg file and/or string.
-    shape: the TopoDS_Shape to export
-    filename (optional): if provided, save to an svg file
-    width, height (optional): integers, specify the canva size in pixels
-    margin_left, margin_top (optional): integers, in pixel
-    export_hidden_edges (optional): whether or not draw hidden edges using a dashed line
-    location (optional): a gp_Pnt, the lookat
-    direction (optional): to set up the projector direction
-    color (optional), "default to "black".
-    line_width (optional, default to 1): an integer
+    shape: TopoDS_Shape,
+    filename: str = None,
+    width: int = 800,
+    height: int = 600,
+    margin_left: int = 10,
+    margin_top: int = 30,
+    export_hidden_edges: bool = True,
+    location: gp_Pnt = gp_Pnt(0, 0, 0),
+    direction: gp_Dir = gp_Dir(1, 1, 1),
+    color: str = "black",
+    line_width: str = "1px",
+    unit: str = "mm",
+) -> Union[bool, str]:
+    """
+    Exports a shape to an SVG file or string.
+
+    :param shape: The TopoDS_Shape to export.
+    :param filename: If provided, the path to save the SVG file.
+    :param width: The width of the SVG canvas in pixels.
+    :param height: The height of the SVG canvas in pixels.
+    :param margin_left: The left margin in pixels.
+    :param margin_top: The top margin in pixels.
+    :param export_hidden_edges: If True, hidden edges are drawn with a dashed line.
+    :param location: The viewpoint location for HLR.
+    :param direction: The view direction for HLR.
+    :param color: The color of the lines.
+    :param line_width: The width of the lines.
+    :param unit: The unit of the coordinates ('mm' or 'm').
+    :return: The SVG content as a string if no filename is provided, otherwise True.
+    :raises AssertionError: If the shape is null or the export fails.
     """
     check_svgwrite_installed()
 
@@ -653,8 +692,13 @@ def export_shape_to_svg(
 #################################################
 # ply export (write not avaiable from upstream) #
 #################################################
-def write_ply_file(a_shape, ply_filename):
-    """ocaf based ply exporter"""
+def write_ply_file(a_shape: TopoDS_Shape, ply_filename: str):
+    """
+    Exports a shape to a PLY file using OCAF.
+
+    :param a_shape: The TopoDS_Shape to export.
+    :param ply_filename: The path to the output PLY file.
+    """
     # create a document
     doc = TDocStd_Document("pythonocc-doc-ply-export")
     shape_tool = XCAFDoc_DocumentTool.ShapeTool(doc.Main())
@@ -686,8 +730,13 @@ def write_ply_file(a_shape, ply_filename):
 #################################################
 # Obj export (write not avaiable from upstream) #
 #################################################
-def write_obj_file(a_shape, obj_filename):
-    """ocaf based ply exporter"""
+def write_obj_file(a_shape: TopoDS_Shape, obj_filename: str):
+    """
+    Exports a shape to an OBJ file using OCAF.
+
+    :param a_shape: The TopoDS_Shape to export.
+    :param obj_filename: The path to the output OBJ file.
+    """
     # create a document
     doc = TDocStd_Document("pythonocc-doc-obj-export")
     shape_tool = XCAFDoc_DocumentTool.ShapeTool(doc.Main())
@@ -725,27 +774,33 @@ def write_obj_file(a_shape, obj_filename):
 # gltf #
 ########
 def read_gltf_file(
-    filename,
-    is_parallel=False,
-    is_double_precision=False,
-    skip_late_data_loading=True,
-    keep_late_data=True,
-    verbose=False,
-    load_all_scenes=False,
-):
-    shapes_to_return = []
+    filename: str,
+    is_parallel: bool = False,
+    is_double_precision: bool = False,
+    skip_late_data_loading: bool = False,
+    keep_late_data: bool = True,
+    verbose: bool = False,
+    load_all_scenes: bool = False,
+) -> List[TopoDS_Shape]:
+    """
+    Reads a glTF file and returns the shape.
 
+    :param filename: The path to the glTF file.
+    :param is_parallel: If True, uses parallel processing. Defaults to False.
+    :param is_double_precision: If True, uses double precision. Defaults to False.
+    :param skip_late_data_loading: If True, skips loading late data. Defaults to False.
+    :param keep_late_data: If True, keeps late data. Defaults to True.
+    :param verbose: If True, prints debug messages. Defaults to False.
+    :param load_all_scenes: If True, loads all scenes. Defaults to False.
+    :return: A list containing the read shape.
+    :raises FileNotFoundError: If the specified file does not exist.
+    :raises IOError: If the file cannot be read.
+    """
     if not os.path.isfile(filename):
         raise FileNotFoundError(f"{filename} not found.")
-    doc = TDocStd_Document("pythonocc-doc-gltf-import")
-
-    # Get root assembly
-    shape_tool = XCAFDoc_DocumentTool.ShapeTool(doc.Main())
 
     gltf_reader = RWGltf_CafReader()
-    # gltf_reader.SetSystemLengthUnit (aScaleFactorM);
     gltf_reader.SetSystemCoordinateSystem(RWMesh_CoordinateSystem_posYfwd_posZup)
-    gltf_reader.SetDocument(doc)
     gltf_reader.SetParallel(is_parallel)
     gltf_reader.SetDoublePrecision(is_double_precision)
     gltf_reader.SetToSkipLateDataLoading(skip_late_data_loading)
@@ -756,19 +811,20 @@ def read_gltf_file(
     status = gltf_reader.Perform(filename, Message_ProgressRange())
 
     if status != IFSelect_RetDone:
-        raise IOError("Error while writing shape to STEP file.")
+        raise IOError("Error while reading GLTF file.")
 
-    labels = TDF_LabelSequence()
-    shape_tool.GetFreeShapes(labels)
-
-    for i in range(1, labels.Length()):
-        shapes_to_return.append(shape_tool.GetShape(labels.Value(i)))
-
-    return shapes_to_return
+    return [gltf_reader.SingleShape()]
 
 
-def write_gltf_file(a_shape, gltf_filename):
-    """ocaf based ply exporter"""
+def write_gltf_file(a_shape: TopoDS_Shape, gltf_filename: str, binary=True):
+    """
+    Exports a shape to a glTF file using OCAF.
+
+    :param a_shape: The TopoDS_Shape to export.
+    :param gltf_filename: The path to the output glTF file.
+    :param binary: If True, exports to a binary glTF (.glb) file. Defaults to True.
+    :raises IOError: If the export fails.
+    """
     # create a document
     doc = TDocStd_Document("pythonocc-doc-gltf-export")
     shape_tool = XCAFDoc_DocumentTool.ShapeTool(doc.Main())
@@ -786,9 +842,9 @@ def write_gltf_file(a_shape, gltf_filename):
         TCollection_AsciiString("Authors"), TCollection_AsciiString("pythonocc")
     )
 
-    rwgltf_writer = RWGltf_CafWriter(gltf_filename, True)
+    rwgltf_writer = RWGltf_CafWriter(gltf_filename, binary)
 
     status = rwgltf_writer.Perform(doc, a_file_info, Message_ProgressRange())
 
     if status != IFSelect_RetDone:
-        raise IOError("Error while writing shape to STEP file.")
+        raise IOError("Error while writing shape to GLTF file.")

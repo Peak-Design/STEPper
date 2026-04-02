@@ -12,6 +12,12 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 # Copyright 2021 Tommi Hyppänen
+#
+# Modified 2026 by Peak-Design:
+#   - Updated to pythonocc-core 7.9.0 (OpenCASCADE 7.9.0)
+#   - Fixed tessellation race conditions and re-tessellation fallback
+#   - Improved corrupt STEP file handling
+#   - Added failed parts diagnostics
 
 import sys
 from os.path import dirname
@@ -47,7 +53,7 @@ from OCC.Core.gp import gp, gp_Dir, gp_Pln, gp_Pnt, gp_Pnt2d, gp_Trsf, gp_Vec, g
 # from OCC.Core.Standard import Standard_Real
 from OCC.Core.IFSelect import IFSelect_RetDone
 from OCC.Core.IMeshTools import IMeshTools_Parameters
-from OCC.Core.Interface import Interface_Static_SetIVal
+from OCC.Core.Interface import Interface_Static
 from OCC.Core.Poly import poly
 from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCC.Core.STEPCAFControl import STEPCAFControl_Reader
@@ -389,9 +395,19 @@ class ReadSTEP:
 
         print("STEP read into memory")
 
-        # https://dev.opencascade.org/content/loading-step-file-crashes-edgeloop
-        # Default is 1, try also 0
-        # Interface_Static_SetIVal("read.surfacecurve.mode", 3)
+        # Check the STEP data model for unresolved references
+        has_data_failures = False
+        try:
+            step_model = step_simple_reader.StepModel()
+            if step_model is not None:
+                global_check = step_model.GlobalCheck(True)
+                if global_check.HasFailed():
+                    has_data_failures = True
+                    nb_fails = global_check.NbFails()
+                    print(f"WARNING: STEP file has {nb_fails} data model failure(s).")
+                    print("This may indicate unresolved references.")
+        except Exception as e:
+            print(f"STEP model pre-check failed: {e}")
 
         # read units
         ulen_names = TColStd_SequenceOfAsciiString()
@@ -448,12 +464,47 @@ class ReadSTEP:
         assert status == IFSelect_RetDone
 
         print("DataExchange: Transferring")
-        # print("Roots:", step_reader.NbRootsForTransfer())
-        transfer_result = step_reader.Transfer(doc)
-        if not transfer_result:
-            print("Dataexchange transfer FAILED.")
+
+        # Try transfer with default surface curve mode first (preserves more
+        # geometry).  Only fall back to mode 0 (skip surface curves) when the
+        # transfer crashes — this can happen on files with unresolved refs.
+        # See: https://dev.opencascade.org/content/loading-step-file-crashes-edgeloop
+        transfer_ok = False
+        if has_data_failures:
+            try:
+                transfer_result = step_reader.Transfer(doc)
+                transfer_ok = bool(transfer_result)
+                if transfer_ok:
+                    print("DataExchange: Transfer done")
+                else:
+                    print("DataExchange: Transfer returned failure, retrying in safe mode...")
+            except Exception as e:
+                print(f"DataExchange: Transfer failed ({e}), retrying in safe mode...")
+
+            if not transfer_ok:
+                # Retry with mode 0: discard surface curves from file
+                from OCC.Core.Interface import Interface_Static
+                Interface_Static.SetIVal("read.surfacecurve.mode", 0)
+                doc = TDocStd_Document("STEP")
+                step_reader = STEPCAFControl_Reader()
+                step_reader.SetColorMode(True)
+                step_reader.SetNameMode(True)
+                step_reader.SetMatMode(True)
+                step_reader.SetLayerMode(True)
+                step_reader.ReadFile(self.filename)
+                transfer_result = step_reader.Transfer(doc)
+                if not transfer_result:
+                    print("DataExchange: Safe mode transfer also FAILED.")
+                else:
+                    print("DataExchange: Transfer done (safe mode)")
+                # Reset to default for any subsequent imports
+                Interface_Static.SetIVal("read.surfacecurve.mode", 1)
         else:
-            print("DataExchange: Transfer done")
+            transfer_result = step_reader.Transfer(doc)
+            if not transfer_result:
+                print("Dataexchange transfer FAILED.")
+            else:
+                print("DataExchange: Transfer done")
 
         self.doc = doc
 
@@ -505,6 +556,8 @@ class ReadSTEP:
         self.tag_info = {}
         self.skipped_shapes = set([])
         self.import_problems = {"Triangulation": 0, "Undefined normals": 0, "Empty shape": 0}
+        self.failed_parts = []  # List of (name, reason) for parts that produced no geometry
+        self._pre_tessellated = False
 
     def read_file(self, filename):
         """Returns list of tuples (topods_shape, label, color)
@@ -602,6 +655,45 @@ class ReadSTEP:
         tree = _get_shapes()
         self.tree = tree
 
+    def pre_tessellate_all(self, lin_def=0.8, ang_def=0.5):
+        """Pre-tessellate all unique shapes using thread pool for parallelism.
+
+        OpenCASCADE SWIG bindings release the GIL during C++ calls, so
+        threading provides real speedup for CPU-bound tessellation.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        shapes = list(self.sub_shapes.keys())
+        if not shapes:
+            self._pre_tessellated = True
+            return
+
+        def _tessellate_group(shape):
+            brt = breptools()
+            iter_shapes = [shape] + self.sub_shapes.get(shape, [])
+            for shp in iter_shapes:
+                brt.Clean(shp)
+                ex = TopExp_Explorer(shp, TopAbs_FACE)
+                if ex.More():
+                    brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
+                    brepmesh.Perform()
+
+        n_workers = min(len(shapes), os.cpu_count() or 4)
+
+        if n_workers > 1 and len(shapes) > 1:
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = {pool.submit(_tessellate_group, s): s for s in shapes}
+                for f in as_completed(futures):
+                    try:
+                        f.result()
+                    except Exception as e:
+                        print(f"Warning: pre-tessellation failed for a shape: {e}")
+        else:
+            for s in shapes:
+                _tessellate_group(s)
+
+        self._pre_tessellated = True
+
     def triangulate_face(self, face, tform):
         bt = BRep_Tool()
         location = TopLoc_Location()
@@ -632,11 +724,11 @@ class ReadSTEP:
             if x < Umin:
                 Umin = x
             if x > Umax:
-                Umin = x
+                Umax = x
             if y < Vmin:
                 Vmin = y
             if y > Vmax:
-                Vmin = y
+                Vmax = y
 
         Ucenter = (Umin + Umax) * 0.5
         Vcenter = (Vmin + Vmax) * 0.5
@@ -738,8 +830,6 @@ class ReadSTEP:
         iter_shapes = [shape] + self.sub_shapes[shape]
         iter_shapes.sort(key=lambda x: x.Checked())
 
-        brt = breptools()
-
         face_data = OrderedDict()
         batch = 0
 
@@ -752,17 +842,29 @@ class ReadSTEP:
             else:
                 col_name = ""
 
-            # Clean all previous triangulations
-            brt.Clean(shp)
-
             # Subshape transforms can be different from the mainshape transform
             ex = TopExp_Explorer(shp, TopAbs_FACE)
             if not ex.More():
                 self.import_problems["Empty shape"] += 1
                 continue
 
-            brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
-            brepmesh.Perform()
+            # Skip meshing if already done by pre_tessellate_all
+            if not self._pre_tessellated:
+                breptools().Clean(shp)
+                brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
+                brepmesh.Perform()
+            else:
+                # Verify pre-tessellation succeeded; if not, re-tessellate.
+                # Threading race conditions in pre_tessellate_all can cause
+                # BRepMesh to silently produce no output for some shapes
+                # (especially COMPOUND shapes that share internal topology).
+                test_loc = TopLoc_Location()
+                test_face = topods.Face(ex.Current())
+                if BRep_Tool().Triangulation(test_face, test_loc) is None:
+                    breptools().Clean(shp)
+                    brepmesh = BRepMesh_IncrementalMesh(shp, lin_def, False, ang_def, False)
+                    brepmesh.Perform()
+                    print("[re-tess]", end="", flush=True)
             trf = shp.Location().Transformation()
             # Iterate through faces with TopExp_Explorer
             while ex.More():
