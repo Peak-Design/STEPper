@@ -10,23 +10,22 @@ Originally created by **ambi** (Tommi Hyppanen). Now maintained by **Peak Design
 - Analytic surface normals for smooth, seamless shading on curved surfaces
 - Per-face vertex colors and automatic material creation from STEP color data
 - Part hierarchy preserved as Blender object tree
-- Robust handling of corrupted geometry — attempts to import everything it can instead of skipping entire parts
+- Robust handling of corrupted geometry - attempts to import everything it can instead of skipping entire parts
 - ShapeFix healing for shapes with missing or damaged geometry
 - Native C++ mesh extraction with multithreaded normal computation
 - Up to 5x faster import speeds compared to v1.x
 
 ## Requirements
 
-- **Windows 10+ (64-bit)** — Windows only for now
+- **Windows 10+ (64-bit)** - Windows only for now
 - **Blender 5.1** with Python 3.13
-- Visual Studio C++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe
+- Visual Studio C++ Redistributable: https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170 (vc_redist.x64.exe)
 
 ## Installation
 
-1. Install the [Visual Studio C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) if you don't already have it.
-2. Download the latest release `.zip` file.
-3. In Blender, go to **Edit > Preferences > Add-ons** and click **Install...**, then select the `.zip` file.
-4. Enable the addon in the Add-ons list.
+1. Download the latest release repo as a `.zip` file.
+2. In Blender, go to **Edit > Preferences > Add-ons** and click **Install...**, then select the `.zip` file.
+3. Enable the addon in the Add-ons list.
 
 The importer panel will appear in **3D View > Tools panel > Stepper**.
 
@@ -47,10 +46,10 @@ Restart Blender, then remove the addon from Preferences > Add-ons. To update, re
 
 This addon is free and open source under the GPL v3 license.
 
-**ambi** — original creator:
+**ambi** - original creator:
 https://ambient.gumroad.com/l/stepper
 
-**Peak Design** — current maintainer, tips welcome:
+**Peak Design** - current maintainer, tips welcome:
 https://ko-fi.com/oskarasspalvys
 
 ## License
