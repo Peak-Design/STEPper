@@ -101,16 +101,16 @@ from OCC.Core.StepShape import (
 
 import OCC
 
-print("--> STEPper OpenCASCADE version:", OCC.VERSION)
+print("--> STEPper NEXT OpenCASCADE version:", OCC.VERSION)
 
 # Native C++ acceleration for mesh extraction (optional)
 try:
     from . import stepper_native
     _HAS_NATIVE = True
-    print("--> STEPper native acceleration: ENABLED")
+    print("--> STEPper NEXT native acceleration: ENABLED")
 except ImportError:
     _HAS_NATIVE = False
-    print("--> STEPper native acceleration: not available (using Python fallback)")
+    print("--> STEPper NEXT native acceleration: not available (using Python fallback)")
 
 
 def _limit_openmp_threads(n):

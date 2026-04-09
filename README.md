@@ -1,4 +1,4 @@
-# STEPper - STEP File Importer for Blender
+# STEPper NEXT - STEP File Importer for Blender
 
 Blender addon for importing STEP (`.step` / `.stp`) files directly into Blender using the OpenCASCADE (OCC) geometry kernel. The produced mesh is a triangulation of the underlying CAD surface with smooth normals computed from the analytic shape geometry.
 
@@ -27,7 +27,7 @@ Originally created by **ambi** (Tommi Hyppanen). Now maintained by **Peak Design
 2. In Blender, go to **Edit > Preferences > Add-ons** and click **Install...**, then select the `.zip` file.
 3. Enable the addon in the Add-ons list.
 
-The importer panel will appear in **3D View > Tools panel > Stepper**.
+The importer panel will appear in **3D View > Tools panel > STEPper NEXT**.
 
 ## Uninstall / Update
 
@@ -37,6 +37,7 @@ Restart Blender, then remove the addon from Preferences > Add-ons. To update, re
 
 | Version | Blender | Changes |
 |---------|---------|---------|
+| 2.1.3   | 5.1     | Renamed to STEPper NEXT, auto-apply scale, skip empty objects, preferences now persist across sessions |
 | 2.1.x   | 5.1     | Multithreaded normal computation, performance optimizations, crash fixes for corrupt STEP files |
 | 2.1.0   | 5.1     | Updated to pythonocc-core 7.9.3 / Python 3.13, native C++ mesh extraction |
 | 2.0.0   | 5.0     | Ported to Blender 5.0 API, added import diagnostics and failed parts reporting |

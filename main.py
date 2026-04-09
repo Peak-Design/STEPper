@@ -262,7 +262,7 @@ def choose_hierarchy_types(htypes):
     return hierarchy_flat, hierarchy_tree, hierarchy_empties
 
 
-def transform_to_up(up, chosen_objects, scale, to_cursor=True):
+def transform_to_up(up, chosen_objects, scale, to_cursor=True, apply_scale=True):
     """
     Set all chosen_objects transforms <up>["X", "Y", "Z"] as up
     Optionally move to cursor <to_cursor>
@@ -308,15 +308,19 @@ def transform_to_up(up, chosen_objects, scale, to_cursor=True):
         # apply
         set_obj_matrix_world(obj, mat)
 
-    # Apply scale
-    # for obj in created_objs:
-    #     # Apply object scale
-    #     obj.select_set(True)
-    #     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    #     obj.select_set(False)
-
-    # for obj in created_objs:
-    #     obj.select_set(True)
+    # Apply scale — bake scale into mesh vertices so obj.scale = (1,1,1)
+    if apply_scale:
+        prev_selection = bpy.context.selected_objects[:]
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in chosen_objects:
+            if obj.data is not None:  # skip empties
+                obj.select_set(True)
+        if bpy.context.selected_objects:
+            bpy.context.view_layer.objects.active = bpy.context.selected_objects[0]
+            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in prev_selection:
+            obj.select_set(True)
 
 
 # Debug timing flag — set from addon settings at import start
@@ -784,7 +788,7 @@ def _show_import_issues_popup(failed_parts, recovered_parts):
             col.label(text="    Usually caused by unresolved references in the STEP file.", icon="INFO")
 
     icon = "ERROR" if failed_parts else "INFO"
-    bpy.context.window_manager.popup_menu(draw, title="STEPper Import Warning", icon=icon)
+    bpy.context.window_manager.popup_menu(draw, title="STEPper NEXT Import Warning", icon=icon)
 
 
 def load_step(
@@ -796,6 +800,7 @@ def load_step(
     # merge_distance=0.001,
     up_as="Y",
     htypes="TREE",
+    apply_scale=True,
 ):
     from . import importer
 
@@ -967,9 +972,15 @@ def load_step(
                 # Track parts that produced no geometry
                 if obj.data is not None and len(obj.data.vertices) == 0:
                     step_reader.failed_parts.append(name)
+                    if _get_addon_prefs().skip_empty_objects:
+                        mesh_data = obj.data
+                        bpy.data.objects.remove(obj)
+                        bpy.data.meshes.remove(mesh_data)
+                        obj = None
 
-                created_objs.append(obj)
-                created_names[shape_name] = obj
+                if obj is not None:
+                    created_objs.append(obj)
+                    created_names[shape_name] = obj
 
         # No shape in leaf, empty creation enabled, do this
         elif hierarchy_empties:
@@ -1074,7 +1085,7 @@ def load_step(
                 obj.matrix_parent_inverse = parent.matrix_world.inverted()
 
     print(f"\n--- Phase 3/3: Applying transforms ---")
-    transform_to_up(up_as[0], created_objs, scale)
+    transform_to_up(up_as[0], created_objs, scale, apply_scale=apply_scale)
 
     wm.progress_end()
     elapsed = time.time() - start_time
@@ -1084,7 +1095,7 @@ def load_step(
     n_unique = len(created_names)
     n_linked = n_objects - n_unique
     print(f"\n{'='*50}")
-    print(f"  STEPper Import Summary")
+    print(f"  STEPper NEXT Import Summary")
     print(f"{'='*50}")
     print(f"  File:    {filename}")
     print(f"  Objects: {n_objects} ({n_unique} unique, {n_linked} linked copies)")
@@ -1236,6 +1247,12 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
         default=False,
     )
 
+    apply_scale: bpy.props.BoolProperty(
+        name="Apply scale",
+        description="Bake scale into mesh vertices so object scale is (1, 1, 1)",
+        default=True,
+    )
+
     def draw(self, context):
         layout = self.layout
 
@@ -1247,7 +1264,7 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
 
         row = layout.row()
 
-        row.label(text="STEPper import options:")
+        row.label(text="STEPper NEXT import options:")
 
         col = layout.box()
         col = col.column(align=True)
@@ -1258,8 +1275,8 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
             row = col.row()
             row.prop(self, "user_scale")
 
-        # row = col.row()
-        # row.prop(self, "merge_distance")
+        row = col.row()
+        row.prop(self, "apply_scale")
 
         if _get_addon_prefs().simpler_parameters:
             row = col.row()
@@ -1310,6 +1327,7 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
                 ang_deflection=a_def,
                 up_as=self.up_as,
                 htypes=self.hierarchy_types,
+                apply_scale=self.apply_scale,
             )
             if result is False:
                 self.report({"ERROR"}, "STEP file could not be opened. Possibly damaged file.")
@@ -1538,10 +1556,10 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
 
 
 class STEP_PT_STEPper(bpy.types.Panel):
-    bl_label = "STEPper: Build"
+    bl_label = "STEPper NEXT: Build"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "Stepper"
+    bl_category = "STEPper NEXT"
 
     def draw(self, context):
         prg = context.scene.stepper
@@ -1578,10 +1596,10 @@ class STEP_PT_STEPper(bpy.types.Panel):
 
 
 class STEP_PT_STEPper_Reload(bpy.types.Panel):
-    bl_label = "STEPper: File"
+    bl_label = "STEPper NEXT: File"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "Stepper"
+    bl_category = "STEPper NEXT"
 
     def draw(self, context):
         layout = self.layout
@@ -1596,10 +1614,10 @@ class STEP_PT_STEPper_Reload(bpy.types.Panel):
 
 
 class STEP_PT_STEPper_Debug(bpy.types.Panel):
-    bl_label = "STEPper: Debug"
+    bl_label = "STEPper NEXT: Debug"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "Stepper"
+    bl_category = "STEPper NEXT"
 
     def draw(self, context):
         layout = self.layout
@@ -1653,11 +1671,11 @@ class STEP_PT_STEPper_Debug(bpy.types.Panel):
 
 def _get_addon_prefs():
     """Return the addon preferences instance."""
-    return bpy.context.preferences.addons["STEPper"].preferences
+    return bpy.context.preferences.addons["STEPper_NEXT"].preferences
 
 
 class STEP_AddonPreferences(bpy.types.AddonPreferences):
-    bl_idname = "STEPper"
+    bl_idname = "STEPper_NEXT"
 
     build_materials: bpy.props.BoolProperty(
         name="Build materials",
@@ -1677,6 +1695,12 @@ class STEP_AddonPreferences(bpy.types.AddonPreferences):
         default=True,
     )
 
+    skip_empty_objects: bpy.props.BoolProperty(
+        name="Skip empty objects",
+        description="Don't create objects for parts that produce no geometry",
+        default=True,
+    )
+
     debug_timing: bpy.props.BoolProperty(
         name="Debug timing",
         description="Print detailed timing information during import",
@@ -1690,7 +1714,7 @@ class STEP_AddonPreferences(bpy.types.AddonPreferences):
         if sys.version_info[:2] != must_have_python:
             box = layout.box().column(align=True)
             box.alert = True
-            box.label(text="STEPper: Python version check failure", icon="ERROR")
+            box.label(text="STEPper NEXT: Python version check failure", icon="ERROR")
 
             row = box.row()
             row.label(text="Current version: " + str(".".join(str(i) for i in sys.version_info[:2])))
@@ -1710,11 +1734,14 @@ class STEP_AddonPreferences(bpy.types.AddonPreferences):
         row.prop(self, "simpler_parameters")
 
         row = layout.row()
+        row.prop(self, "skip_empty_objects")
+
+        row = layout.row()
         row.prop(self, "debug_timing")
 
 
 def menu_func_import(self, context):
-    self.layout.operator(ImportStepCADOperator.bl_idname, text="STEP (.step, .stp)")
+    self.layout.operator(ImportStepCADOperator.bl_idname, text="STEP (.step, .stp) [STEPper NEXT]")
 
 
 classes = (
