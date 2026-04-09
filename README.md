@@ -57,19 +57,28 @@ Each row shows an original STEP material name and a dropdown to pick the replace
 - Original STEP material names are stored on each imported object as a `STEP_materials` custom property, so re-applying a different database always works correctly.
 - Linked materials (e.g., from the Blender asset browser) are fully supported. A local copy is saved into the database file so it can be loaded in any `.blend` file.
 
+## Platform Support
+
+| Platform | Status |
+|----------|--------|
+| **Windows 10+ (64-bit)** | Tested and supported |
+| **macOS Apple Silicon (M1/M2/M3/M4)** | Experimental (untested) |
+| **Linux (64-bit)** | Experimental (untested) |
+
 ## Requirements
 
-- **Windows 10+ (64-bit)** - Windows only for now
 - **Blender 5.1** with Python 3.13
-- Visual Studio C++ Redistributable: https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170 (vc_redist.x64.exe)
+- **Windows only:** Visual Studio C++ Redistributable: https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170 (vc_redist.x64.exe)
 
 ## Installation
 
-1. Download the latest release repo as a `.zip` file.
+1. Download the `.zip` for your platform from the [Releases](../../releases) page.
 2. In Blender, go to **Edit > Preferences > Add-ons** and click **Install...**, then select the `.zip` file.
 3. Enable the addon in the Add-ons list.
 
 The importer panel will appear in **3D View > Tools panel > STEPper NEXT**.
+
+> **Note:** macOS and Linux builds are automatically compiled via GitHub Actions but have not been tested yet. If you encounter issues on these platforms, please [open an issue](../../issues).
 
 ## Uninstall / Update
 
@@ -95,6 +104,10 @@ https://ambient.gumroad.com/l/stepper
 
 **Peak Design** - current maintainer, tips welcome:
 https://ko-fi.com/oskarasspalvys
+
+## For Developers
+
+This repository contains pre-built Windows OCC binaries for direct use as a Blender addon during development. Cross-platform builds (Windows, macOS, Linux) are available on the [Releases](../../releases) page, built automatically via GitHub Actions from conda-forge packages.
 
 ## License
 
