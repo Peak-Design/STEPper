@@ -14,6 +14,47 @@ Originally created by **ambi** (Tommi Hyppanen). Now maintained by **Peak Design
 - ShapeFix healing for shapes with missing or damaged geometry
 - Native C++ mesh extraction with multithreaded normal computation
 - Up to 5x faster import speeds compared to v1.x
+- Material database system for automatic material replacement on import
+
+## Material Database
+
+The material database lets you define mappings from generic STEP material names (e.g., "GRAY", "BLACK") to proper Blender materials (e.g., "Stainless Steel", "Dark Grey Paint"). Once configured, materials are automatically replaced every time you import a STEP file.
+
+![Material Mappings Panel](docs/material_mappings.png)
+
+### Setup
+
+1. Import a STEP file normally. Objects arrive with generic STEP materials.
+2. Assign the Blender materials you want to each part (e.g., replace "GRAY" with "Stainless Steel").
+3. In the **STEPper NEXT: Material DB** sidebar panel, click **New** to create a database. The addon scans the scene and records what each original STEP material was replaced with.
+4. The database is saved as a `.blend` file in the addon's `MaterialDB/` folder.
+
+### Importing with a Database
+
+Select a database from the dropdown in the **Material DB** panel, or choose one in the STEP import dialog under **Material DB**. The selected database persists between sessions. When importing, all matching STEP materials are automatically replaced.
+
+### Panel Buttons
+
+| Button | Description |
+|--------|-------------|
+| **New** | Create a new database from the current scene. Scans all STEP objects and records current material assignments. If the same original material was replaced with different materials on different parts, the most common replacement wins. |
+| **Duplicate** | Copy the active database under a new name. Useful for minor variations between projects. |
+| **Load** | Reload mappings from the active database file and append its materials into the current file. |
+| **Delete** (trash icon) | Delete the active database file. Shows a confirmation prompt. |
+| **Update** | Scan the scene for any new original STEP material names not already in the database and add them. Does not auto-save. |
+| **Save** | Write the current mappings and materials to the database file. Linked/asset-browser materials are handled automatically. |
+| **Apply** | Apply the active database mappings to objects in the scene. Works with the **Selection only** checkbox to limit to selected objects. |
+
+### Material Mappings Table
+
+Each row shows an original STEP material name and a dropdown to pick the replacement Blender material. You can change any mapping and click **Save** to update the database.
+
+### Notes
+
+- Databases are stored in the `MaterialDB/` folder inside the addon directory.
+- The active database selection is stored in addon preferences and persists across sessions and files.
+- Original STEP material names are stored on each imported object as a `STEP_materials` custom property, so re-applying a different database always works correctly.
+- Linked materials (e.g., from the Blender asset browser) are fully supported. A local copy is saved into the database file so it can be loaded in any `.blend` file.
 
 ## Requirements
 
@@ -37,6 +78,7 @@ Restart Blender, then remove the addon from Preferences > Add-ons. To update, re
 
 | Version | Blender | Changes |
 |---------|---------|---------|
+| 2.2.0   | 5.1     | Material database system for automatic material replacement, fixed apply-scale on instanced/multi-user meshes |
 | 2.1.3   | 5.1     | Renamed to STEPper NEXT, auto-apply scale, skip empty objects, preferences now persist across sessions |
 | 2.1.x   | 5.1     | Multithreaded normal computation, performance optimizations, crash fixes for corrupt STEP files |
 | 2.1.0   | 5.1     | Updated to pythonocc-core 7.9.3 / Python 3.13, native C++ mesh extraction |

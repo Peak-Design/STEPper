@@ -22,13 +22,14 @@
 #   - Added ShapeFix healing for shapes with corrupted/missing geometry
 #   - Fixed crash: validate face triangulations before native C++ extraction
 #   - Renamed to STEPper NEXT, auto-apply scale, skip empty objects (v2.1.3)
+#   - Material database system, multi-user scale fix (v2.2.0)
 
 bl_info = {
     "name": "STEPper NEXT",
     "author": "ambi, Peak-Design",
     "description": "STEP OpenCASCADE import",
     "blender": (5, 1, 0),
-    "version": (2, 1, 3),
+    "version": (2, 2, 0),
     "location": "3D View > Tools panel > STEPper NEXT",
     "category": "Import",
 }
