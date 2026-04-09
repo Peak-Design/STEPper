@@ -2319,11 +2319,11 @@ class STEP_PT_STEPper_Debug(bpy.types.Panel):
 
 def _get_addon_prefs():
     """Return the addon preferences instance."""
-    return bpy.context.preferences.addons["STEPper_NEXT"].preferences
+    return bpy.context.preferences.addons[__package__].preferences
 
 
 class STEP_AddonPreferences(bpy.types.AddonPreferences):
-    bl_idname = "STEPper_NEXT"
+    bl_idname = __package__
 
     build_materials: bpy.props.BoolProperty(
         name="Build materials",
