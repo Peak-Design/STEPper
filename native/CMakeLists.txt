@@ -9,9 +9,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Development NumPy)
 
 # ── Find OpenCascade ─────────────────────────────────────────────────
-# On conda environments, OCCT is typically found automatically.
-# Set OpenCASCADE_DIR if not in a standard location.
-find_package(OpenCASCADE REQUIRED)
+# Only request the components we actually use (FoundationClasses, ModelingData,
+# ModelingAlgorithms, DataExchange).  Loading ALL components pulls in
+# Visualization which requires VTK — we don't need that.
+find_package(OpenCASCADE REQUIRED COMPONENTS FoundationClasses ModelingData ModelingAlgorithms DataExchange)
 
 # ── Build the extension module ───────────────────────────────────────
 Python3_add_library(stepper_native MODULE stepper_native.cpp)
@@ -23,7 +24,7 @@ target_include_directories(stepper_native PRIVATE
 )
 
 target_link_libraries(stepper_native PRIVATE
-    ${OpenCASCADE_LIBRARIES}
+    TKernel TKMath TKBRep TKTopAlgo TKG3d
 )
 
 # Remove "lib" prefix on all platforms (Python expects bare module name)
