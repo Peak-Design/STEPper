@@ -31,7 +31,7 @@ import bmesh  # type: ignore
 import bpy  # type: ignore
 from bpy.props import StringProperty  # type: ignore
 from bpy_extras.io_utils import ImportHelper  # type: ignore
-from mathutils import Vector  # type: ignore
+from mathutils import Matrix, Vector  # type: ignore
 
 from .trimesh import TriMesh
 from .importer import NativeMeshData
@@ -309,18 +309,29 @@ def transform_to_up(up, chosen_objects, scale, to_cursor=True, apply_scale=True)
         set_obj_matrix_world(obj, mat)
 
     # Apply scale — bake scale into mesh vertices so obj.scale = (1,1,1)
-    if apply_scale:
-        prev_selection = bpy.context.selected_objects[:]
-        bpy.ops.object.select_all(action='DESELECT')
+    # Uses direct vertex scaling instead of bpy.ops.object.transform_apply
+    # to avoid "Cannot apply to a multi user" errors on instanced meshes.
+    if apply_scale and scale != 1.0:
+        processed_meshes = set()
         for obj in chosen_objects:
-            if obj.data is not None:  # skip empties
-                obj.select_set(True)
-        if bpy.context.selected_objects:
-            bpy.context.view_layer.objects.active = bpy.context.selected_objects[0]
-            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-        bpy.ops.object.select_all(action='DESELECT')
-        for obj in prev_selection:
-            obj.select_set(True)
+            if obj.data is None:
+                continue
+            mesh = obj.data
+            if mesh not in processed_meshes:
+                vert_count = len(mesh.vertices)
+                if vert_count > 0:
+                    verts = np.empty(vert_count * 3, dtype=np.float32)
+                    mesh.vertices.foreach_get('co', verts)
+                    verts *= scale
+                    mesh.vertices.foreach_set('co', verts)
+                    mesh.update()
+                processed_meshes.add(mesh)
+
+        for obj in chosen_objects:
+            if obj.data is None:
+                continue
+            loc, rot, _ = obj.matrix_world.decompose()
+            obj.matrix_world = Matrix.LocRotScale(loc, rot, Vector((1.0, 1.0, 1.0)))
 
 
 # Debug timing flag — set from addon settings at import start
@@ -1000,6 +1011,7 @@ def load_step(
             obj["STEP_file"] = filepath
             obj["STEP_name"] = name
             obj["STEP_tree_location"] = node_index
+            obj["STEP_applied_scale"] = scale if apply_scale else 0.0
             created_uuid[self_uuid] = obj
 
     # assert len(created_objs) == len(shapes_labels)
@@ -1541,6 +1553,17 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
                     # with the new deflection values
                     step_reader._pre_tessellated = False
                     build_mesh(step_reader, obj, shp, lin_def, ang_def)
+                    # Re-apply baked scale if it was applied during import
+                    applied_scale = obj.get("STEP_applied_scale", 0.0)
+                    if applied_scale and applied_scale != 1.0:
+                        mesh = obj.data
+                        vert_count = len(mesh.vertices)
+                        if vert_count > 0:
+                            verts = np.empty(vert_count * 3, dtype=np.float32)
+                            mesh.vertices.foreach_get('co', verts)
+                            verts *= applied_scale
+                            mesh.vertices.foreach_set('co', verts)
+                            mesh.update()
                     obj.display_type = "TEXTURED"
                     build_tags.add(obj["STEP_tag"])
                     break
