@@ -197,17 +197,23 @@ jobs:
 
       - name: Fix dylib paths
         run: |
+          set +e  # don't exit on grep/otool returning non-zero
           CORE_DIR="STEPper_NEXT/OCC/Core"
+
+          fix_deps() {
+            local target="$1"
+            local rpath_prefix="$2"
+            deps=$(otool -L "$target" 2>/dev/null | awk '{print $1}' | grep "$CONDA_PREFIX" || true)
+            for dep in $deps; do
+              dep_basename=$(basename "$dep")
+              install_name_tool -change "$dep" "${rpath_prefix}${dep_basename}" "$target" 2>/dev/null || true
+            done
+          }
 
           # Fix all dylibs to use @loader_path for dependencies
           for lib in "$CORE_DIR"/*.dylib; do
             [ -f "$lib" ] || continue
-            # Get all dependency paths that point to the conda env
-            otool -L "$lib" 2>/dev/null | grep "$CONDA_PREFIX" | awk '{print $1}' | while read dep; do
-              dep_basename=$(basename "$dep")
-              install_name_tool -change "$dep" "@loader_path/$dep_basename" "$lib" 2>/dev/null || true
-            done
-            # Also fix the library's own install name
+            fix_deps "$lib" "@loader_path/"
             lib_basename=$(basename "$lib")
             install_name_tool -id "@loader_path/$lib_basename" "$lib" 2>/dev/null || true
           done
@@ -215,23 +221,17 @@ jobs:
           # Fix .so modules (Python extensions)
           for so in "$CORE_DIR"/*.so; do
             [ -f "$so" ] || continue
-            otool -L "$so" 2>/dev/null | grep "$CONDA_PREFIX" | awk '{print $1}' | while read dep; do
-              dep_basename=$(basename "$dep")
-              install_name_tool -change "$dep" "@loader_path/$dep_basename" "$so" 2>/dev/null || true
-            done
+            fix_deps "$so" "@loader_path/"
           done
 
-          # Fix stepper_native too
+          # Fix stepper_native to find libs in OCC/Core/
           for so in STEPper_NEXT/stepper_native*.so; do
             [ -f "$so" ] || continue
-            otool -L "$so" 2>/dev/null | grep "$CONDA_PREFIX" | awk '{print $1}' | while read dep; do
-              dep_basename=$(basename "$dep")
-              install_name_tool -change "$dep" "@loader_path/OCC/Core/$dep_basename" "$so" 2>/dev/null || true
-            done
+            fix_deps "$so" "@loader_path/OCC/Core/"
           done
 
           # Ad-hoc sign everything (required on macOS for modified binaries)
-          find STEPper_NEXT -name "*.dylib" -o -name "*.so" | while read f; do
+          find STEPper_NEXT \( -name "*.dylib" -o -name "*.so" \) -print0 | while IFS= read -r -d '' f; do
             codesign --force --sign - "$f" 2>/dev/null || true
           done
 
