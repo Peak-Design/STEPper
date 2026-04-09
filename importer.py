@@ -116,19 +116,37 @@ except ImportError:
 def _limit_openmp_threads(n):
     """Set the maximum number of OpenMP threads at runtime.
 
-    Uses omp_set_num_threads() via ctypes on the MSVC OpenMP runtime
-    (vcomp140.dll).  Pass 0 to restore the default (all cores).
+    Loads the platform-specific OpenMP runtime via ctypes and calls
+    omp_set_num_threads().  Pass 0 to restore the default (all cores).
     Falls back to setting OMP_NUM_THREADS env var if ctypes fails.
     """
     import ctypes
+    import platform as _platform
+
+    _omp_lib = None
+    _sys = _platform.system()
     try:
-        vcomp = ctypes.CDLL("vcomp140.dll")
-        vcomp.omp_set_num_threads(n if n > 0 else (os.cpu_count() or 4))
-    except Exception:
-        if n > 0:
-            os.environ["OMP_NUM_THREADS"] = str(n)
-        else:
-            os.environ.pop("OMP_NUM_THREADS", None)
+        if _sys == "Windows":
+            _omp_lib = ctypes.CDLL("vcomp140.dll")
+        elif _sys == "Darwin":
+            _omp_lib = ctypes.CDLL("libomp.dylib")
+        elif _sys == "Linux":
+            _omp_lib = ctypes.CDLL("libgomp.so.1")
+    except OSError:
+        pass
+
+    if _omp_lib is not None:
+        try:
+            _omp_lib.omp_set_num_threads(n if n > 0 else (os.cpu_count() or 4))
+            return
+        except Exception:
+            pass
+
+    # Fallback: environment variable
+    if n > 0:
+        os.environ["OMP_NUM_THREADS"] = str(n)
+    else:
+        os.environ.pop("OMP_NUM_THREADS", None)
 
 
 class NativeMeshData:

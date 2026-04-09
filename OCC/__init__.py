@@ -34,10 +34,11 @@ def initialize_occt_libraries(occt_essentials_path) -> None:
                 break
 
 
-# on windows, see #1347
-if platform.system() == "Windows":
+_system = platform.system()
+_core_dir = os.path.join(os.path.dirname(__file__), "Core")
+
+if _system == "Windows":
     # For bundled deployment (e.g. Blender addon), DLLs are in OCC/Core/
-    _core_dir = os.path.join(os.path.dirname(__file__), "Core")
     if os.path.isdir(_core_dir):
         os.add_dll_directory(_core_dir)
     else:
@@ -49,3 +50,27 @@ if platform.system() == "Windows":
                 initialize_occt_libraries(
                     occt_essentials_path=os.environ["OCCT_ESSENTIALS_ROOT"]
                 )
+
+elif _system == "Linux":
+    # On Linux, .so files use $ORIGIN rpath set during packaging.
+    # As a fallback, pre-load libs via ctypes if rpath resolution fails.
+    if os.path.isdir(_core_dir):
+        import ctypes
+        for _lib in sorted(os.listdir(_core_dir)):
+            if _lib.startswith("libTK") and _lib.endswith(".so"):
+                try:
+                    ctypes.cdll.LoadLibrary(os.path.join(_core_dir, _lib))
+                except OSError:
+                    pass
+
+elif _system == "Darwin":
+    # On macOS, dylibs use @loader_path set by install_name_tool during
+    # packaging.  As a fallback, pre-load them via ctypes.
+    if os.path.isdir(_core_dir):
+        import ctypes
+        for _lib in sorted(os.listdir(_core_dir)):
+            if _lib.startswith("libTK") and _lib.endswith(".dylib"):
+                try:
+                    ctypes.cdll.LoadLibrary(os.path.join(_core_dir, _lib))
+                except OSError:
+                    pass
