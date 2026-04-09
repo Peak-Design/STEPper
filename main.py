@@ -657,7 +657,7 @@ def _apply_trimesh(obj, mesh, colors, mat_names, norms, uvs,
 
 def build_mesh(step_reader, obj, shp, lind, angd, vcol_name="Colors"):
     hacks = set([])
-    if bpy.context.scene.stepper.hack_skip_zero_solids:
+    if _get_addon_prefs().hack_skip_zero_solids:
         hacks.add("skip_solids")
 
     mesh, colors, mat_names, norms, uvs = precompute_mesh_data(
@@ -665,7 +665,7 @@ def build_mesh(step_reader, obj, shp, lind, angd, vcol_name="Colors"):
 
     return apply_mesh_to_blender(
         obj, mesh, colors, mat_names, norms, uvs, vcol_name,
-        build_materials=bpy.context.scene.stepper.build_materials,
+        build_materials=_get_addon_prefs().build_materials,
     )
 
 
@@ -800,7 +800,7 @@ def load_step(
     from . import importer
 
     global _debug_timing
-    _debug_timing = bpy.context.scene.stepper.debug_timing
+    _debug_timing = _get_addon_prefs().debug_timing
 
     hierarchy_flat, hierarchy_tree, hierarchy_empties = choose_hierarchy_types(htypes)
 
@@ -859,9 +859,9 @@ def load_step(
     # loop focused on the fast bmesh/bpy work.
     _reset_phase2_times()
     hacks = set()
-    if bpy.context.scene.stepper.hack_skip_zero_solids:
+    if _get_addon_prefs().hack_skip_zero_solids:
         hacks.add("skip_solids")
-    build_materials = bpy.context.scene.stepper.build_materials
+    build_materials = _get_addon_prefs().build_materials
 
     # Identify unique shapes (first occurrence per shape_name)
     unique_shapes = {}  # shape_name -> (shp, part_name)
@@ -1117,24 +1117,11 @@ def load_step(
 
 
 class PG_Stepper(bpy.types.PropertyGroup):
-    build_materials: bpy.props.BoolProperty(
-        name="Build materials",
-        description="Build materials from STEP file colors",
-        default=True,
-    )
+    """Per-scene properties (import parameters, file paths).
 
-    hack_skip_zero_solids: bpy.props.BoolProperty(
-        name="Skip faulty solids",
-        description="Skip corrupted/empty parts entirely (no healing or recovery attempts)",
-        default=False,
-    )
-
-    simpler_parameters: bpy.props.BoolProperty(
-        name="Artist friendly parameters",
-        description="Instead of linear and angle deflection values, use only detail setting",
-        default=True,
-    )
-
+    Persistent settings (build_materials, debug_timing, etc.) live on
+    STEP_AddonPreferences and are accessed via _get_addon_prefs().
+    """
     detail_level: bpy.props.IntProperty(
         name="Mesh detail",
         description="How detailed you want the mesh to be",
@@ -1156,12 +1143,6 @@ class PG_Stepper(bpy.types.PropertyGroup):
         default=0.5,
         min=0.002,
         # max=2.0,
-    )
-
-    debug_timing: bpy.props.BoolProperty(
-        name="Debug timing",
-        description="Print detailed timing information during import",
-        default=False,
     )
 
     fix_ascii_file: bpy.props.StringProperty(
@@ -1280,7 +1261,7 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
         # row = col.row()
         # row.prop(self, "merge_distance")
 
-        if bpy.context.scene.stepper.simpler_parameters:
+        if _get_addon_prefs().simpler_parameters:
             row = col.row()
             row.prop(self, "detail_level")
 
@@ -1306,7 +1287,7 @@ class ImportStepCADOperator(bpy.types.Operator, ImportHelper):
         # print(type(self.files))
         # print(dir(self.files))
         l_def, a_def = self.lin_deflection, self.ang_deflection
-        if bpy.context.scene.stepper.simpler_parameters:
+        if _get_addon_prefs().simpler_parameters:
             a_def, l_def = calculate_detail_level(self.detail_level)
 
         import_files = [i.name for i in self.files]
@@ -1496,7 +1477,7 @@ class STEP_OT_RebuildSelected(bpy.types.Operator):
         ang_def = context.scene.stepper.ang_deflection
         lin_def = context.scene.stepper.lin_deflection
         # merge_distance = context.scene.stepper.merge_distance
-        if bpy.context.scene.stepper.simpler_parameters:
+        if _get_addon_prefs().simpler_parameters:
             ang_def, lin_def = calculate_detail_level(bpy.context.scene.stepper.detail_level)
 
         # select all objs with the same meshes
@@ -1579,7 +1560,7 @@ class STEP_PT_STEPper(bpy.types.Panel):
         # row = col.row()
         # row.prop(prg, "merge_distance")
 
-        if bpy.context.scene.stepper.simpler_parameters:
+        if _get_addon_prefs().simpler_parameters:
             row = col.row()
             row.prop(prg, "detail_level")
 
@@ -1670,8 +1651,37 @@ class STEP_PT_STEPper_Debug(bpy.types.Panel):
             row.label(text="Select active STEP object")
 
 
+def _get_addon_prefs():
+    """Return the addon preferences instance."""
+    return bpy.context.preferences.addons["STEPper"].preferences
+
+
 class STEP_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = "STEPper"
+
+    build_materials: bpy.props.BoolProperty(
+        name="Build materials",
+        description="Build materials from STEP file colors",
+        default=True,
+    )
+
+    hack_skip_zero_solids: bpy.props.BoolProperty(
+        name="Skip faulty solids",
+        description="Skip corrupted/empty parts entirely (no healing or recovery attempts)",
+        default=False,
+    )
+
+    simpler_parameters: bpy.props.BoolProperty(
+        name="Artist friendly parameters",
+        description="Instead of linear and angle deflection values, use only detail setting",
+        default=True,
+    )
+
+    debug_timing: bpy.props.BoolProperty(
+        name="Debug timing",
+        description="Print detailed timing information during import",
+        default=False,
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -1691,23 +1701,16 @@ class STEP_AddonPreferences(bpy.types.AddonPreferences):
             return
 
         row = layout.row()
-        row.prop(bpy.context.scene.stepper, "build_materials")
+        row.prop(self, "build_materials")
 
         row = layout.row()
-        row.prop(bpy.context.scene.stepper, "hack_skip_zero_solids")
+        row.prop(self, "hack_skip_zero_solids")
 
         row = layout.row()
-        row.prop(bpy.context.scene.stepper, "simpler_parameters")
+        row.prop(self, "simpler_parameters")
 
         row = layout.row()
-        row.prop(bpy.context.scene.stepper, "debug_timing")
-
-        # row = layout.row()
-        # row.prop(bpy.context.scene.stepper, "hierarchy_types")
-
-        # row.operator(PMM_OT_EnsurePIP.bl_idname, text="Ensure PIP")
-        # row.operator(PMM_OT_UpgradePIP.bl_idname, text="Upgrade PIP")
-        # row.operator(PMM_OT_PIPList.bl_idname, text="List")
+        row.prop(self, "debug_timing")
 
 
 def menu_func_import(self, context):
@@ -1715,6 +1718,7 @@ def menu_func_import(self, context):
 
 
 classes = (
+    STEP_AddonPreferences,
     PG_Stepper,
     ImportStepCADOperator,
     STEP_OT_ClearCache,
@@ -1726,7 +1730,6 @@ classes = (
     STEP_PT_STEPper,
     STEP_PT_STEPper_Reload,
     STEP_PT_STEPper_Debug,
-    STEP_AddonPreferences,
 )
 
 
