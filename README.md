@@ -2,7 +2,7 @@
 
 Blender addon for importing STEP (`.step` / `.stp`) files directly into Blender using the OpenCASCADE (OCC) geometry kernel. The produced mesh is a triangulation of the underlying CAD surface with smooth normals computed from the analytic shape geometry.
 
-Originally created by **ambi** (Tommi Hyppanen). Now maintained by **Peak Design**.
+Originally created by **ambi** (Tommi Hyppanen). Now maintained by **Peak Design** (Oskaras Spalvys).
 
 ## Features
 
@@ -13,25 +13,26 @@ Originally created by **ambi** (Tommi Hyppanen). Now maintained by **Peak Design
 - Robust handling of corrupted geometry - attempts to import everything it can instead of skipping entire parts
 - ShapeFix healing for shapes with missing or damaged geometry
 - Native C++ mesh extraction with multithreaded normal computation
-- Up to 5x faster import speeds compared to v1.x
+- Up to 10x faster import speeds compared to v1.x
 - Material database system for automatic material replacement on import
 
 ## Material Database
 
-The material database lets you define mappings from generic STEP material names (e.g., "GRAY", "BLACK") to proper Blender materials (e.g., "Stainless Steel", "Dark Grey Paint"). Once configured, materials are automatically replaced every time you import a STEP file.
+The material database lets you define mappings from generic STEP material names (e.g., "GRAY", "BLACK") to authored Blender materials. Once configured, materials are automatically replaced every time you import a STEP file.
 
 ![Material Mappings Panel](docs/material_mappings.png)
 
 ### Setup
 
-1. Import a STEP file normally. Objects arrive with generic STEP materials.
-2. Assign the Blender materials you want to each part (e.g., replace "GRAY" with "Stainless Steel").
+1. Import a STEP file normally. Objects load with generic STEP materials.
+2. Assign the Blender materials you want to each part (e.g., replace "GRAY" with "Stainless Steel" etc.).
 3. In the **STEPper NEXT: Material DB** sidebar panel, click **New** to create a database. The addon scans the scene and records what each original STEP material was replaced with.
-4. The database is saved as a `.blend` file in the addon's `MaterialDB/` folder.
+4. Manually assign/tweak material mappings in the mapping table if required.
+5. The database is saved as a `.blend` file in the addon's `MaterialDB/` folder.
 
 ### Importing with a Database
 
-Select a database from the dropdown in the **Material DB** panel, or choose one in the STEP import dialog under **Material DB**. The selected database persists between sessions. When importing, all matching STEP materials are automatically replaced.
+Select a database from the dropdown in the STEP import dialog under **Material DB**. The selected database persists between sessions. When importing, all matching STEP materials are automatically replaced.
 
 ### Panel Buttons
 
@@ -40,9 +41,9 @@ Select a database from the dropdown in the **Material DB** panel, or choose one 
 | **New** | Create a new database from the current scene. Scans all STEP objects and records current material assignments. If the same original material was replaced with different materials on different parts, the most common replacement wins. |
 | **Duplicate** | Copy the active database under a new name. Useful for minor variations between projects. |
 | **Load** | Reload mappings from the active database file and append its materials into the current file. |
-| **Delete** (trash icon) | Delete the active database file. Shows a confirmation prompt. |
-| **Update** | Scan the scene for any new original STEP material names not already in the database and add them. Does not auto-save. |
-| **Save** | Write the current mappings and materials to the database file. Linked/asset-browser materials are handled automatically. |
+| **Delete** (trash icon) | Delete the active database file. |
+| **Update** | Scan the scene for any new original STEP material names not already in the database and add them. **Does not modify existing mappings.** USe this to expand and grow your material database. Does not auto-save. |
+| **Save** | Write the current mappings and materials to the database file. |
 | **Apply** | Apply the active database mappings to objects in the scene. Works with the **Selection only** checkbox to limit to selected objects. |
 
 ### Material Mappings Table
