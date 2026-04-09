@@ -250,131 +250,6 @@ jobs:
           path: STEPper_NEXT-*-macos-arm64.zip
 
   # ════════════════════════════════════════════════════════════════════
-  # macOS x86_64 (Intel) build
-  # ════════════════════════════════════════════════════════════════════
-  build-macos-x86_64:
-    runs-on: macos-13
-    defaults:
-      run:
-        shell: bash -l {0}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Miniconda
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          auto-update-conda: false
-          auto-activate-base: true
-          channels: conda-forge
-          python-version: '3.13'
-
-      - name: Install pythonocc-core and build tools
-        run: |
-          conda install -y -c conda-forge pythonocc-core=7.9.3 numpy cmake ninja
-
-      - name: Build stepper_native
-        run: |
-          cd native
-          mkdir build && cd build
-          cmake .. \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPython3_EXECUTABLE="$CONDA_PREFIX/bin/python3" \
-            -DOpenCASCADE_DIR="$CONDA_PREFIX/lib/cmake/opencascade"
-          cmake --build . --config Release
-
-      - name: Assemble addon
-        run: |
-          ADDON_DIR="STEPper_NEXT"
-          mkdir -p "$ADDON_DIR/OCC/Core"
-          mkdir -p "$ADDON_DIR/OCC/Wrapper"
-          mkdir -p "$ADDON_DIR/OCC/Display"
-          mkdir -p "$ADDON_DIR/OCC/Extend"
-
-          # Copy addon Python files
-          for f in __init__.py main.py importer.py trimesh.py nurbs.py six.py stepanalyzer.py; do
-            [ -f "$f" ] && cp "$f" "$ADDON_DIR/"
-          done
-          cp LICENSE "$ADDON_DIR/"
-          cp README.md "$ADDON_DIR/"
-
-          # Copy OCC Python wrappers and stubs
-          cp OCC/__init__.py "$ADDON_DIR/OCC/"
-          cp OCC/LICENSE "$ADDON_DIR/OCC/" 2>/dev/null || true
-          cp OCC/AUTHORS "$ADDON_DIR/OCC/" 2>/dev/null || true
-          cp OCC/Wrapper/*.py "$ADDON_DIR/OCC/Wrapper/" 2>/dev/null || true
-
-          # Copy OCC Core .py and .pyi files from repo
-          cp OCC/Core/*.py "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
-          cp OCC/Core/*.pyi "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
-
-          # Copy OCC Core binary modules from conda (.so files)
-          CONDA_SP="$CONDA_PREFIX/lib/python3.13/site-packages"
-          cp "$CONDA_SP"/OCC/Core/*.so "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
-
-          # Copy OCCT dylibs from conda
-          cp "$CONDA_PREFIX"/lib/libTK*.dylib "$ADDON_DIR/OCC/Core/"
-          # Third-party dylibs
-          for lib in libtbb.12.dylib libtbbmalloc.2.dylib libfreetype.dylib libz.dylib libxml2.dylib; do
-            [ -f "$CONDA_PREFIX/lib/$lib" ] && cp "$CONDA_PREFIX/lib/$lib" "$ADDON_DIR/OCC/Core/"
-          done
-
-          # Copy built stepper_native
-          find native/build -name "stepper_native*.so" -exec cp {} "$ADDON_DIR/" \;
-
-          # Copy docs folder if present
-          [ -d "docs" ] && cp -r docs "$ADDON_DIR/docs"
-
-      - name: Fix dylib paths
-        run: |
-          CORE_DIR="STEPper_NEXT/OCC/Core"
-
-          # Fix all dylibs to use @loader_path for dependencies
-          for lib in "$CORE_DIR"/*.dylib; do
-            [ -f "$lib" ] || continue
-            otool -L "$lib" 2>/dev/null | grep "$CONDA_PREFIX" | awk '{print $1}' | while read dep; do
-              dep_basename=$(basename "$dep")
-              install_name_tool -change "$dep" "@loader_path/$dep_basename" "$lib" 2>/dev/null || true
-            done
-            lib_basename=$(basename "$lib")
-            install_name_tool -id "@loader_path/$lib_basename" "$lib" 2>/dev/null || true
-          done
-
-          for so in "$CORE_DIR"/*.so; do
-            [ -f "$so" ] || continue
-            otool -L "$so" 2>/dev/null | grep "$CONDA_PREFIX" | awk '{print $1}' | while read dep; do
-              dep_basename=$(basename "$dep")
-              install_name_tool -change "$dep" "@loader_path/$dep_basename" "$so" 2>/dev/null || true
-            done
-          done
-
-          for so in STEPper_NEXT/stepper_native*.so; do
-            [ -f "$so" ] || continue
-            otool -L "$so" 2>/dev/null | grep "$CONDA_PREFIX" | awk '{print $1}' | while read dep; do
-              dep_basename=$(basename "$dep")
-              install_name_tool -change "$dep" "@loader_path/OCC/Core/$dep_basename" "$so" 2>/dev/null || true
-            done
-          done
-
-          find STEPper_NEXT -name "*.dylib" -o -name "*.so" | while read f; do
-            codesign --force --sign - "$f" 2>/dev/null || true
-          done
-
-      - name: Create zip
-        run: |
-          VERSION="${{ github.event.inputs.version || github.ref_name }}"
-          VERSION="${VERSION:-dev}"
-          zip -r "STEPper_NEXT-${VERSION}-macos-x86_64.zip" STEPper_NEXT/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-x86_64-build
-          path: STEPper_NEXT-*-macos-x86_64.zip
-
-  # ════════════════════════════════════════════════════════════════════
   # Linux build
   # ════════════════════════════════════════════════════════════════════
   build-linux:
@@ -492,7 +367,7 @@ jobs:
   # Create GitHub Release (runs after all builds complete)
   # ════════════════════════════════════════════════════════════════════
   release:
-    needs: [build-windows, build-macos-arm64, build-macos-x86_64, build-linux]
+    needs: [build-windows, build-macos-arm64, build-linux]
     runs-on: ubuntu-latest
     # Only create release on tag push or manual dispatch with version
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.version != ''
@@ -517,7 +392,6 @@ jobs:
             ### Downloads
             - **Windows (64-bit):** `STEPper_NEXT-*-windows.zip`
             - **macOS Apple Silicon (M1/M2/M3/M4):** `STEPper_NEXT-*-macos-arm64.zip`
-            - **macOS Intel:** `STEPper_NEXT-*-macos-x86_64.zip`
             - **Linux (64-bit):** `STEPper_NEXT-*-linux.zip`
 
             ### Requirements
