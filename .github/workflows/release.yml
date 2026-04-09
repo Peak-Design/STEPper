@@ -51,12 +51,18 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build stepper_native
-        shell: cmd
         run: |
           cd native
-          mkdir build
-          cd build
-          cmake .. -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="%CONDA_PREFIX%\python.exe" -DPython3_INCLUDE_DIR="%CONDA_PREFIX%\include" -DPython3_LIBRARY="%CONDA_PREFIX%\libs\python313.lib" -DOCCT_ROOT="%CONDA_PREFIX%\Library"
+          mkdir build && cd build
+          cmake .. \
+            -G "NMake Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=cl \
+            -DCMAKE_CXX_COMPILER=cl \
+            -DPython3_EXECUTABLE="$(cygpath -w "$CONDA_PREFIX/python.exe")" \
+            -DPython3_INCLUDE_DIR="$(cygpath -w "$CONDA_PREFIX/include")" \
+            -DPython3_LIBRARY="$(cygpath -w "$CONDA_PREFIX/libs/python313.lib")" \
+            -DOCCT_ROOT="$(cygpath -w "$CONDA_PREFIX/Library")"
           cmake --build . --config Release
 
       - name: Assemble addon
