@@ -52,8 +52,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DPython3_EXECUTABLE="$CONDA_PREFIX/python.exe" \
             -DPython3_INCLUDE_DIR="$CONDA_PREFIX/include" \
-            -DPython3_LIBRARY="$CONDA_PREFIX/libs/python313.lib" \
-            -DOpenCASCADE_DIR="$CONDA_PREFIX/Library/lib/cmake/opencascade"
+            -DPython3_LIBRARY="$CONDA_PREFIX/libs/python313.lib"
           cmake --build . --config Release
 
       - name: Assemble addon
@@ -151,8 +150,7 @@ jobs:
           cmake .. \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPython3_EXECUTABLE="$CONDA_PREFIX/bin/python3" \
-            -DOpenCASCADE_DIR="$CONDA_PREFIX/lib/cmake/opencascade"
+            -DPython3_EXECUTABLE="$CONDA_PREFIX/bin/python3"
           cmake --build . --config Release
 
       - name: Assemble addon
@@ -285,8 +283,7 @@ jobs:
           cmake .. \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPython3_EXECUTABLE="$CONDA_PREFIX/bin/python3" \
-            -DOpenCASCADE_DIR="$CONDA_PREFIX/lib/cmake/opencascade"
+            -DPython3_EXECUTABLE="$CONDA_PREFIX/bin/python3"
           cmake --build . --config Release
 
       - name: Assemble addon

@@ -8,11 +8,29 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ── Find Python (must match Blender's embedded Python 3.13) ──────────
 find_package(Python3 3.13 EXACT REQUIRED COMPONENTS Development NumPy)
 
-# ── Find OpenCascade ─────────────────────────────────────────────────
-# Only request the components we actually use (FoundationClasses, ModelingData,
-# ModelingAlgorithms, DataExchange).  Loading ALL components pulls in
-# Visualization which requires VTK — we don't need that.
-find_package(OpenCASCADE REQUIRED COMPONENTS FoundationClasses ModelingData ModelingAlgorithms DataExchange)
+# ── OpenCascade: skip find_package, use OCCT_ROOT directly ──────────
+# The OCCT CMake config has cross-component deps (VTK, etc.) that
+# break when only a subset is installed.  We only need headers + a
+# few libs, so we locate them manually via OCCT_ROOT.
+if(NOT DEFINED OCCT_ROOT)
+    # Default: assume conda environment layout
+    if(WIN32)
+        set(OCCT_ROOT "$ENV{CONDA_PREFIX}/Library")
+    else()
+        set(OCCT_ROOT "$ENV{CONDA_PREFIX}")
+    endif()
+endif()
+
+set(OCCT_INCLUDE_DIR "${OCCT_ROOT}/include/opencascade")
+if(NOT EXISTS "${OCCT_INCLUDE_DIR}")
+    message(FATAL_ERROR "OCCT headers not found at ${OCCT_INCLUDE_DIR}")
+endif()
+
+if(WIN32)
+    set(OCCT_LIB_DIR "${OCCT_ROOT}/lib")
+else()
+    set(OCCT_LIB_DIR "${OCCT_ROOT}/lib")
+endif()
 
 # ── Build the extension module ───────────────────────────────────────
 Python3_add_library(stepper_native MODULE stepper_native.cpp)
@@ -20,8 +38,10 @@ Python3_add_library(stepper_native MODULE stepper_native.cpp)
 target_include_directories(stepper_native PRIVATE
     ${Python3_INCLUDE_DIRS}
     ${Python3_NumPy_INCLUDE_DIRS}
-    ${OpenCASCADE_INCLUDE_DIR}
+    ${OCCT_INCLUDE_DIR}
 )
+
+target_link_directories(stepper_native PRIVATE ${OCCT_LIB_DIR})
 
 target_link_libraries(stepper_native PRIVATE
     TKernel TKMath TKBRep TKTopAlgo TKG3d
