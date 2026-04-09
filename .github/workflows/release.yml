@@ -14,6 +14,9 @@ on:
     tags:
       - 'v*'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: write   # needed to create releases
 
@@ -35,24 +38,25 @@ jobs:
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-update-conda: false
-          auto-activate-base: true
+          auto-activate: true
           channels: conda-forge
+          conda-remove-defaults: true
           python-version: '3.13'
 
       - name: Install pythonocc-core and build tools
         run: |
-          conda install -y -c conda-forge pythonocc-core=7.9.3 numpy cmake ninja
+          conda install -y -c conda-forge pythonocc-core=7.9.3 numpy cmake
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build stepper_native
+        shell: cmd
         run: |
           cd native
-          mkdir build && cd build
-          cmake .. \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPython3_EXECUTABLE="$CONDA_PREFIX/python.exe" \
-            -DPython3_INCLUDE_DIR="$CONDA_PREFIX/include" \
-            -DPython3_LIBRARY="$CONDA_PREFIX/libs/python313.lib"
+          mkdir build
+          cd build
+          cmake .. -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="%CONDA_PREFIX%\python.exe" -DPython3_INCLUDE_DIR="%CONDA_PREFIX%\include" -DPython3_LIBRARY="%CONDA_PREFIX%\libs\python313.lib" -DOCCT_ROOT="%CONDA_PREFIX%\Library"
           cmake --build . --config Release
 
       - name: Assemble addon
@@ -135,8 +139,9 @@ jobs:
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-update-conda: false
-          auto-activate-base: true
+          auto-activate: true
           channels: conda-forge
+          conda-remove-defaults: true
           python-version: '3.13'
 
       - name: Install pythonocc-core and build tools
@@ -268,8 +273,9 @@ jobs:
         uses: conda-incubator/setup-miniconda@v3
         with:
           auto-update-conda: false
-          auto-activate-base: true
+          auto-activate: true
           channels: conda-forge
+          conda-remove-defaults: true
           python-version: '3.13'
 
       - name: Install pythonocc-core and build tools
