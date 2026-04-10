@@ -193,11 +193,23 @@ jobs:
           CONDA_SP="$CONDA_PREFIX/lib/python3.13/site-packages"
           cp "$CONDA_SP"/OCC/Core/*.so "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
 
-          # Copy OCCT dylibs from conda
-          cp "$CONDA_PREFIX"/lib/libTK*.dylib "$ADDON_DIR/OCC/Core/"
-          # Third-party dylibs
-          for lib in libtbb.12.dylib libtbbmalloc.2.dylib libfreetype.dylib libz.dylib libxml2.dylib; do
-            [ -f "$CONDA_PREFIX/lib/$lib" ] && cp "$CONDA_PREFIX/lib/$lib" "$ADDON_DIR/OCC/Core/"
+          # Copy OCCT dylibs from conda (including versioned files like libTKBRep.7.9.dylib)
+          for f in "$CONDA_PREFIX"/lib/libTK*dylib*; do
+            [ -e "$f" ] && cp -P "$f" "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
+          done
+          # Third-party dylibs (copy all versions + symlinks)
+          for pattern in libtbb libtbbmalloc libfreetype libz libxml2 libicuuc libicui18n libicudata liblzma; do
+            for f in "$CONDA_PREFIX"/lib/${pattern}*dylib*; do
+              [ -e "$f" ] && cp -P "$f" "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
+            done
+          done
+          # Resolve any dangling symlinks by also copying targets
+          for link in "$ADDON_DIR/OCC/Core"/*.dylib; do
+            [ -L "$link" ] || continue
+            target=$(readlink "$link")
+            if [ ! -e "$ADDON_DIR/OCC/Core/$target" ] && [ -e "$CONDA_PREFIX/lib/$target" ]; then
+              cp "$CONDA_PREFIX/lib/$target" "$ADDON_DIR/OCC/Core/"
+            fi
           done
 
           # Copy built stepper_native
@@ -214,24 +226,26 @@ jobs:
           fix_deps() {
             local target="$1"
             local rpath_prefix="$2"
-            deps=$(otool -L "$target" 2>/dev/null | awk '{print $1}' | grep "$CONDA_PREFIX" || true)
-            for dep in $deps; do
-              dep_basename=$(basename "$dep")
-              install_name_tool -change "$dep" "${rpath_prefix}${dep_basename}" "$target" 2>/dev/null || true
+            # Patch both absolute conda paths AND @rpath/ references
+            otool -L "$target" 2>/dev/null | awk '{print $1}' | while read dep; do
+              case "$dep" in
+                "$CONDA_PREFIX"*|@rpath/*)
+                  dep_basename=$(basename "$dep")
+                  install_name_tool -change "$dep" "${rpath_prefix}${dep_basename}" "$target" 2>/dev/null || true
+                  ;;
+              esac
             done
           }
 
-          # Fix all dylibs to use @loader_path for dependencies
-          for lib in "$CORE_DIR"/*.dylib; do
-            [ -f "$lib" ] || continue
+          # Fix all dylibs to use @loader_path for dependencies (including versioned like .7.9.dylib)
+          find "$CORE_DIR" -name "*dylib*" -type f | while IFS= read -r lib; do
             fix_deps "$lib" "@loader_path/"
             lib_basename=$(basename "$lib")
             install_name_tool -id "@loader_path/$lib_basename" "$lib" 2>/dev/null || true
           done
 
           # Fix .so modules (Python extensions)
-          for so in "$CORE_DIR"/*.so; do
-            [ -f "$so" ] || continue
+          find "$CORE_DIR" -name "*.so" -type f | while IFS= read -r so; do
             fix_deps "$so" "@loader_path/"
           done
 
@@ -327,14 +341,23 @@ jobs:
           CONDA_SP="$CONDA_PREFIX/lib/python3.13/site-packages"
           cp "$CONDA_SP"/OCC/Core/*.so "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
 
-          # Copy OCCT shared libs from conda
-          cp "$CONDA_PREFIX"/lib/libTK*.so* "$ADDON_DIR/OCC/Core/"
-          # Third-party libs
-          for lib in libtbb.so.12 libtbbmalloc.so.2 libfreetype.so libz.so libxml2.so; do
-            # Copy the actual file and its symlinks
-            for f in "$CONDA_PREFIX"/lib/${lib}*; do
-              [ -f "$f" ] && cp -P "$f" "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
+          # Copy OCCT shared libs from conda (real files + symlinks)
+          for f in "$CONDA_PREFIX"/lib/libTK*.so*; do
+            [ -e "$f" ] && cp -P "$f" "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
+          done
+          # Third-party libs (copy all versions + symlinks)
+          for pattern in libtbb libtbbmalloc libfreetype libz libxml2 libicuuc libicui18n libicudata liblzma; do
+            for f in "$CONDA_PREFIX"/lib/${pattern}*.so*; do
+              [ -e "$f" ] && cp -P "$f" "$ADDON_DIR/OCC/Core/" 2>/dev/null || true
             done
+          done
+          # Resolve any dangling symlinks
+          for link in "$ADDON_DIR/OCC/Core"/*.so*; do
+            [ -L "$link" ] || continue
+            target=$(readlink "$link")
+            if [ ! -e "$ADDON_DIR/OCC/Core/$target" ] && [ -e "$CONDA_PREFIX/lib/$target" ]; then
+              cp "$CONDA_PREFIX/lib/$target" "$ADDON_DIR/OCC/Core/"
+            fi
           done
 
           # Copy built stepper_native
